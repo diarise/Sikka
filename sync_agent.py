@@ -1,4 +1,4 @@
-# Sikka Secure Auto-Activating Sync Agent (Remote IP Edition)
+# Sikka Secure Auto-Activating Sync Agent (AppData Storage Fix)
 import sqlite3
 import os
 import sys
@@ -21,27 +21,29 @@ def pause_on_exit(msg="Appuyez sur Entrée pour fermer..."):
     input(f"\n{msg}")
     sys.exit(1)
 
-def get_base_dir():
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return "."
+def get_storage_dir():
+    """Returns a safe, persistent writable directory in the user profile (AppData/Roaming/SikkaSync)."""
+    base_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'SikkaSync')
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir, exist_ok=True)
+    return base_dir
 
 def get_hardware_fingerprint():
     raw_info = platform.node() + platform.machine() + platform.processor()
     return hashlib.sha256(raw_info.encode()).hexdigest()[:16]
 
 def auto_activate_and_verify():
-    license_path = os.path.join(get_base_dir(), "license.key")
-    config_path = os.path.join(get_base_dir(), "db_config.json")
+    storage_dir = get_storage_dir()
+    license_path = os.path.join(storage_dir, "license.key")
+    config_path = os.path.join(storage_dir, "db_config.json")
     current_hw_id = get_hardware_fingerprint()
 
-    if not os.path.exists(license_path):
-        print("⚡ No license found. Initiating Sikka auto-activation & remote POS discovery...")
+    if not os.path.exists(license_path) or not os.path.exists(config_path):
+        print("⚡ No valid license or config found. Initiating Sikka auto-activation & remote POS discovery...")
         
         tenant_id = input("Entrez l'ID de la boutique Sikka (ex: NAS-MEDINA-01) : ").strip()
         
         print("\n--- Configuration de la base de données Sage 100 (Distant) ---")
-        # Updated default to use the remote IP address provided by your brother
         server = input("Nom ou IP du serveur SQL [100.68.244.92\\SAGE100] : ").strip() or r"100.68.244.92\SAGE100"
         user = input("Utilisateur SQL [SAGEREADER] : ").strip() or "SAGEREADER"
         password = getpass.getpass("Mot de passe SQL : ").strip()
@@ -58,7 +60,6 @@ def auto_activate_and_verify():
             conn.autocommit = True
             cursor = conn.cursor()
 
-            # List accessible production databases from the remote server
             cursor.execute("SELECT name FROM sys.databases WHERE state = 0 AND name NOT IN ('master', 'tempdb', 'model', 'msdb') ORDER BY name")
             databases = [row[0] for row in cursor.fetchall()]
             cursor.close()
@@ -111,7 +112,7 @@ def auto_activate_and_verify():
             with open(license_path, "w") as f:
                 json.dump(license_data, f, indent=4)
                 
-            print(f"✅ Activation réussie ! Licence liée à la boutique : {tenant_id}")
+            print(f"✅ Activation réussie ! Stocké dans : {storage_dir}")
             return tenant_id, db_config
             
         except Exception as e:
@@ -150,7 +151,6 @@ def pull_sage_metrics(db_config):
         conn = pyodbc.connect(conn_str, timeout=10)
         cursor = conn.cursor()
         
-        # 1. Total sales using F_DOCENTETE and F_DOCLIGNE[cite: 1]
         sales_query = """
             SELECT ISNULL(SUM(CAST(L.DL_MontantTTC AS DECIMAL(18,0))), 0) AS TotalVentes
             FROM F_DOCENTETE E WITH (NOLOCK)
@@ -162,7 +162,6 @@ def pull_sage_metrics(db_config):
         row = cursor.fetchone()
         total_sales = float(row[0]) if row and row[0] else 0.0
         
-        # 2. Total cash collections from F_CREGLEMENT[cite: 2]
         caisse_query = """
             SELECT ISNULL(SUM(CAST(RG_Montant AS DECIMAL(18,0))), 0) AS TotalCaisse
             FROM F_CREGLEMENT WITH (NOLOCK)
