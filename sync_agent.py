@@ -1,4 +1,4 @@
-# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core)
+# Sikka Secure Auto-Activating Sync Agent (Remote IP Edition)
 import sqlite3
 import os
 import sys
@@ -36,12 +36,13 @@ def auto_activate_and_verify():
     current_hw_id = get_hardware_fingerprint()
 
     if not os.path.exists(license_path):
-        print("⚡ No license found. Initiating Sikka auto-activation & POS discovery...")
+        print("⚡ No license found. Initiating Sikka auto-activation & remote POS discovery...")
         
         tenant_id = input("Entrez l'ID de la boutique Sikka (ex: NAS-MEDINA-01) : ").strip()
         
-        print("\n--- Configuration de la base de données Sage 100 (SQL Server) ---")
-        server = input("Nom du serveur SQL [localhost\\SAGE100] : ").strip() or r"localhost\SAGE100"
+        print("\n--- Configuration de la base de données Sage 100 (Distant) ---")
+        # Updated default to use the remote IP address provided by your brother
+        server = input("Nom ou IP du serveur SQL [100.68.244.92\\SAGE100] : ").strip() or r"100.68.244.92\SAGE100"
         user = input("Utilisateur SQL [SAGEREADER] : ").strip() or "SAGEREADER"
         password = getpass.getpass("Mot de passe SQL : ").strip()
 
@@ -49,40 +50,29 @@ def auto_activate_and_verify():
             print("❌ Erreur critique : Le module 'pyodbc' est manquant.")
             pause_on_exit()
 
-        print("🔄 Connexion au serveur SQL Server en cours...")
+        print("🔄 Connexion au serveur distant en cours...")
         try:
             driver = "{ODBC Driver 17 for SQL Server}"
-            master_conn_str = f"DRIVER={driver};SERVER={server};DATABASE=master;UID={user};PWD={password};TrustServerCertificate=yes;Encrypt=no;"
-            conn = pyodbc.connect(master_conn_str, timeout=5)
+            master_conn_str = f"DRIVER={driver};SERVER={server};DATABASE=master;UID={user};PWD={password};TrustServerCertificate=yes;Encrypt=no;Connection Timeout=10;"
+            conn = pyodbc.connect(master_conn_str, timeout=10)
             conn.autocommit = True
             cursor = conn.cursor()
 
-            # Attempt auto-provisioning of SAGEREADER if using admin rights
-            try:
-                cursor.execute("""
-                    IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'SAGEREADER')
-                    BEGIN
-                        CREATE LOGIN SAGEREADER WITH PASSWORD = 'S@ndaga3615', CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF;
-                        GRANT CONNECT SQL TO SAGEREADER;
-                    END
-                """)
-            except Exception:
-                pass 
-
-            # List accessible production databases
+            # List accessible production databases from the remote server
             cursor.execute("SELECT name FROM sys.databases WHERE state = 0 AND name NOT IN ('master', 'tempdb', 'model', 'msdb') ORDER BY name")
             databases = [row[0] for row in cursor.fetchall()]
             cursor.close()
             conn.close()
         except Exception as e:
-            print(f"\n❌ ERREUR DE CONNEXION SQL : {e}")
+            print(f"\n❌ ERREUR DE CONNEXION DISTANTE SQL : {e}")
+            print("💡 Conseil : Vérifiez que le pare-feu du client autorise les connexions distantes sur le port 1433 et que SQL Server écoute en TCP/IP.")
             pause_on_exit()
 
         if not databases:
-            print("❌ Aucune base de données trouvée sur ce serveur.")
+            print("❌ Aucune base de données trouvée sur ce serveur distant.")
             pause_on_exit()
 
-        print("\n📋 Bases de données disponibles :")
+        print("\n📋 Bases de données disponibles sur le serveur distant :")
         for i, db in enumerate(databases, 1):
             print(f"  {i}. {db}")
         
@@ -144,7 +134,7 @@ def auto_activate_and_verify():
         pause_on_exit()
 
 def pull_sage_metrics(db_config):
-    """Pulls live metrics using your brother's verified Sage 100 data schema."""
+    """Pulls live metrics remotely using verified Sage 100 schema[cite: 1]."""
     if not pyodbc:
         return (0.0, 0.0, 0.0)
     try:
@@ -157,10 +147,10 @@ def pull_sage_metrics(db_config):
             f"PWD={db_config['password']};"
             f"TrustServerCertificate=yes;Encrypt=no;"
         )
-        conn = pyodbc.connect(conn_str, timeout=5)
+        conn = pyodbc.connect(conn_str, timeout=10)
         cursor = conn.cursor()
         
-        # 1. Total sales using the brother's exact table relationship (F_DOCENTETE + F_DOCLIGNE)
+        # 1. Total sales using F_DOCENTETE and F_DOCLIGNE[cite: 1]
         sales_query = """
             SELECT ISNULL(SUM(CAST(L.DL_MontantTTC AS DECIMAL(18,0))), 0) AS TotalVentes
             FROM F_DOCENTETE E WITH (NOLOCK)
@@ -172,7 +162,7 @@ def pull_sage_metrics(db_config):
         row = cursor.fetchone()
         total_sales = float(row[0]) if row and row[0] else 0.0
         
-        # 2. Total cash register collections using F_CREGLEMENT (RG_Type = 0 for entries)
+        # 2. Total cash collections from F_CREGLEMENT[cite: 2]
         caisse_query = """
             SELECT ISNULL(SUM(CAST(RG_Montant AS DECIMAL(18,0))), 0) AS TotalCaisse
             FROM F_CREGLEMENT WITH (NOLOCK)
@@ -185,10 +175,10 @@ def pull_sage_metrics(db_config):
 
         cursor.close()
         conn.close()
-        print(f"📊 Données extraites de Sage avec succès -> Ventes (7j): {total_sales} | Encaissements Caisse: {cash_in_drawer}")
+        print(f"📊 Données distantes extraites avec succès -> Ventes (7j): {total_sales} | Caisse: {cash_in_drawer}")
         return (total_sales, cash_in_drawer, 0.0)
     except Exception as e:
-        print(f"⚠️ Avertissement lecture tables Sage 100 : {e}")
+        print(f"⚠️ Avertissement lecture distante Sage 100 : {e}")
         return (0.0, 0.0, 0.0)
 
 def sync():
@@ -208,7 +198,7 @@ def sync():
             "cash_in_drawer": cash,
             "bank_balance": bank,
         }).execute()
-        print(f"[{tenant_id}] Synchronisation cloud réussie -> Supabase mis à jour !")
+        print(f"[{tenant_id}] Synchronisation distante réussie -> Supabase mis à jour !")
     except Exception as e:
         print(f"Erreur de synchronisation cloud : {e}")
 
