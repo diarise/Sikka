@@ -1,4 +1,4 @@
-# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Edition)
+# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core)
 import sqlite3
 import os
 import sys
@@ -144,7 +144,7 @@ def auto_activate_and_verify():
         pause_on_exit()
 
 def pull_sage_metrics(db_config):
-    """Pulls live metrics using your brother's validated Sage 100 SQL query structure."""
+    """Pulls live metrics using your brother's verified Sage 100 data schema."""
     if not pyodbc:
         return (0.0, 0.0, 0.0)
     try:
@@ -160,23 +160,24 @@ def pull_sage_metrics(db_config):
         conn = pyodbc.connect(conn_str, timeout=5)
         cursor = conn.cursor()
         
-        # Exact Sage query structure provided by your brother, filtering for sales (DO_Type IN (6, 7))
-        query = """
-            SELECT ISNULL(SUM(L.DL_MontantTTC), 0) AS TotalVentesJour
+        # 1. Total sales using the brother's exact table relationship (F_DOCENTETE + F_DOCLIGNE)
+        sales_query = """
+            SELECT ISNULL(SUM(CAST(L.DL_MontantTTC AS DECIMAL(18,0))), 0) AS TotalVentes
             FROM F_DOCENTETE E WITH (NOLOCK)
             INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
             WHERE E.DO_Type IN (6, 7)
-              AND E.DO_Date >= CAST(GETDATE() AS DATE)
+              AND E.DO_Date >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
         """
-        cursor.execute(query)
+        cursor.execute(sales_query)
         row = cursor.fetchone()
         total_sales = float(row[0]) if row and row[0] else 0.0
         
-        # Optional: Pull cash collections from F_CREGLEMENT for today
+        # 2. Total cash register collections using F_CREGLEMENT (RG_Type = 0 for entries)
         caisse_query = """
-            SELECT ISNULL(SUM(RG_Montant), 0) AS TotalEncaisseCaisse
+            SELECT ISNULL(SUM(CAST(RG_Montant AS DECIMAL(18,0))), 0) AS TotalCaisse
             FROM F_CREGLEMENT WITH (NOLOCK)
-            WHERE RG_Type = 0 AND RG_Date >= CAST(GETDATE() AS DATE)
+            WHERE RG_Type = 0 
+              AND RG_Date >= DATEADD(day, -7, CAST(GETDATE() AS DATE))
         """
         cursor.execute(caisse_query)
         row_caisse = cursor.fetchone()
@@ -184,9 +185,10 @@ def pull_sage_metrics(db_config):
 
         cursor.close()
         conn.close()
+        print(f"📊 Données extraites de Sage avec succès -> Ventes (7j): {total_sales} | Encaissements Caisse: {cash_in_drawer}")
         return (total_sales, cash_in_drawer, 0.0)
     except Exception as e:
-        print(f"⚠️ Avertissement lecture Sage 100 : {e}")
+        print(f"⚠️ Avertissement lecture tables Sage 100 : {e}")
         return (0.0, 0.0, 0.0)
 
 def sync():
@@ -206,7 +208,7 @@ def sync():
             "cash_in_drawer": cash,
             "bank_balance": bank,
         }).execute()
-        print(f"[{tenant_id}] Synchronisation réussie -> Ventes : {sales} FCFA | Caisse : {cash} FCFA")
+        print(f"[{tenant_id}] Synchronisation cloud réussie -> Supabase mis à jour !")
     except Exception as e:
         print(f"Erreur de synchronisation cloud : {e}")
 
