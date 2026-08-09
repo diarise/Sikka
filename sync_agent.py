@@ -1,4 +1,4 @@
-# Sikka Secure Auto-Activating Sync Agent (Sage SQL Bulletproof Edition)
+# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Edition)
 import sqlite3
 import os
 import sys
@@ -40,29 +40,25 @@ def auto_activate_and_verify():
         
         tenant_id = input("Entrez l'ID de la boutique Sikka (ex: NAS-MEDINA-01) : ").strip()
         
-        print("\n--- Configuration de la base de données Sage (SQL Server) ---")
+        print("\n--- Configuration de la base de données Sage 100 (SQL Server) ---")
         server = input("Nom du serveur SQL [localhost\\SAGE100] : ").strip() or r"localhost\SAGE100"
         user = input("Utilisateur SQL [SAGEREADER] : ").strip() or "SAGEREADER"
         password = getpass.getpass("Mot de passe SQL : ").strip()
 
         if not pyodbc:
-            print("❌ Erreur critique : Le module 'pyodbc' est manquant dans l'exécutable.")
+            print("❌ Erreur critique : Le module 'pyodbc' est manquant.")
             pause_on_exit()
 
-        # Test connection & auto-create SAGEREADER user if using sa/admin rights
         print("🔄 Connexion au serveur SQL Server en cours...")
         try:
             driver = "{ODBC Driver 17 for SQL Server}"
-            # Step 1: Connect to master to check/create user and list databases
             master_conn_str = f"DRIVER={driver};SERVER={server};DATABASE=master;UID={user};PWD={password};TrustServerCertificate=yes;Encrypt=no;"
             conn = pyodbc.connect(master_conn_str, timeout=5)
             conn.autocommit = True
             cursor = conn.cursor()
 
-            # Automatically run your brother's setup logic if permissions allow
+            # Attempt auto-provisioning of SAGEREADER if using admin rights
             try:
-                cursor.execute("IF NOT LOGINPROPERTY('SAGEREADER', 'CreateDate') IS NULL PRINT 'Exists'")
-                # Auto-provision SAGEREADER if not present and we have admin rights
                 cursor.execute("""
                     IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'SAGEREADER')
                     BEGIN
@@ -71,7 +67,7 @@ def auto_activate_and_verify():
                     END
                 """)
             except Exception:
-                pass # If user doesn't have sysadmin rights, skip auto-creation and proceed with provided credentials
+                pass 
 
             # List accessible production databases
             cursor.execute("SELECT name FROM sys.databases WHERE state = 0 AND name NOT IN ('master', 'tempdb', 'model', 'msdb') ORDER BY name")
@@ -80,11 +76,10 @@ def auto_activate_and_verify():
             conn.close()
         except Exception as e:
             print(f"\n❌ ERREUR DE CONNEXION SQL : {e}")
-            print("💡 Conseil : Vérifiez que SQL Server accepte l'authentification mixte et que le nom du serveur est correct.")
             pause_on_exit()
 
         if not databases:
-            print("❌ Aucune base de données de production trouvée sur ce serveur.")
+            print("❌ Aucune base de données trouvée sur ce serveur.")
             pause_on_exit()
 
         print("\n📋 Bases de données disponibles :")
@@ -100,7 +95,6 @@ def auto_activate_and_verify():
 
         print(f"📌 Base sélectionnée : {selected_db}")
 
-        # Save config locally
         db_config = {
             "server": server,
             "username": user,
@@ -141,7 +135,7 @@ def auto_activate_and_verify():
             db_config = json.load(f)
             
         if license_data.get("hw_id") != current_hw_id:
-            print("ERREUR DE SÉCURITÉ : La licence ne correspond pas au matériel de cette machine.")
+            print("ERREUR DE SÉCURITÉ : La licence ne correspond pas au matériel.")
             pause_on_exit()
             
         return license_data.get("tenant_id"), db_config
@@ -150,6 +144,7 @@ def auto_activate_and_verify():
         pause_on_exit()
 
 def pull_sage_metrics(db_config):
+    """Pulls live metrics using your brother's validated Sage 100 SQL query structure."""
     if not pyodbc:
         return (0.0, 0.0, 0.0)
     try:
@@ -165,16 +160,33 @@ def pull_sage_metrics(db_config):
         conn = pyodbc.connect(conn_str, timeout=5)
         cursor = conn.cursor()
         
-        # Pulling total sales from Sage table structure
-        cursor.execute("SELECT SUM(CA_Vente) FROM F_DOCENTETE WHERE DO_Date >= DATEADD(day, -1, GETDATE())")
+        # Exact Sage query structure provided by your brother, filtering for sales (DO_Type IN (6, 7))
+        query = """
+            SELECT ISNULL(SUM(L.DL_MontantTTC), 0) AS TotalVentesJour
+            FROM F_DOCENTETE E WITH (NOLOCK)
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+            WHERE E.DO_Type IN (6, 7)
+              AND E.DO_Date >= CAST(GETDATE() AS DATE)
+        """
+        cursor.execute(query)
         row = cursor.fetchone()
         total_sales = float(row[0]) if row and row[0] else 0.0
         
+        # Optional: Pull cash collections from F_CREGLEMENT for today
+        caisse_query = """
+            SELECT ISNULL(SUM(RG_Montant), 0) AS TotalEncaisseCaisse
+            FROM F_CREGLEMENT WITH (NOLOCK)
+            WHERE RG_Type = 0 AND RG_Date >= CAST(GETDATE() AS DATE)
+        """
+        cursor.execute(caisse_query)
+        row_caisse = cursor.fetchone()
+        cash_in_drawer = float(row_caisse[0]) if row_caisse and row_caisse[0] else 0.0
+
         cursor.close()
         conn.close()
-        return (total_sales, 0.0, 0.0)
+        return (total_sales, cash_in_drawer, 0.0)
     except Exception as e:
-        print(f"⚠️ Avertissement lecture Sage : {e}")
+        print(f"⚠️ Avertissement lecture Sage 100 : {e}")
         return (0.0, 0.0, 0.0)
 
 def sync():
@@ -194,7 +206,7 @@ def sync():
             "cash_in_drawer": cash,
             "bank_balance": bank,
         }).execute()
-        print(f"[{tenant_id}] Synchronisation réussie -> Ventes : {sales} FCFA")
+        print(f"[{tenant_id}] Synchronisation réussie -> Ventes : {sales} FCFA | Caisse : {cash} FCFA")
     except Exception as e:
         print(f"Erreur de synchronisation cloud : {e}")
 
