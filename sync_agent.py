@@ -1,4 +1,4 @@
-# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v2.6 - Continuous Daemon)
+# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v2.7 - Continuous Daemon)
 import sqlite3
 import os
 import sys
@@ -192,7 +192,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         return
 
     try:
-        # 1. VENTES (Avec jointure propre des lignes et sécurisation du total)
+        # 1. VENTES (Jointure interne validée par le frère sur les lignes)
         if is_module_enabled(sb, tenant_id, "sales"):
             query_ventes = """
                 SELECT TOP 50 
@@ -200,13 +200,13 @@ def pull_and_push_modular_data(db_config, tenant_id):
                     CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
                     E.DO_Tiers AS CodeClient,
                     ISNULL(C.CT_Intitule, 'CLIENT INCONNU') AS NomClient,
-                    CAST(ISNULL(SUM(L.DL_MontantTTC), E.DO_Ttc) AS DECIMAL(18,2)) AS MONTANT_TTC,
+                    CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MONTANT_TTC,
                     CASE WHEN E.DO_Type = 6 THEN 'FACTURE' WHEN E.DO_Type = 7 THEN 'AVOIR' ELSE CAST(E.DO_Type AS VARCHAR) END AS TypeDoc
                 FROM F_DOCENTETE E WITH (NOLOCK)
-                LEFT JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+                INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
                 LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
                 WHERE E.DO_Type IN (6, 7)
-                GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type, E.DO_Ttc
+                GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type
                 ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
             """
             try:
@@ -227,7 +227,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         else:
             print(f"[{tenant_id}] Module 'sales' désactivé par l'administrateur.")
 
-        # 2. ACHATS & FOURNISSEURS (Requête frère intégrée et corrigée)
+        # 2. ACHATS & FOURNISSEURS (Jointure interne validée par le frère sur les lignes)
         if is_module_enabled(sb, tenant_id, "achats"):
             query_achats = """
                 SELECT TOP 50 
@@ -235,13 +235,13 @@ def pull_and_push_modular_data(db_config, tenant_id):
                     CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
                     E.DO_Tiers AS CodeFournisseur,
                     ISNULL(C.CT_Intitule, 'FOURNISSEUR INCONNU') AS NomFournisseur,
-                    CAST(ISNULL(SUM(L.DL_MontantTTC), E.DO_Ttc) AS DECIMAL(18,2)) AS MONTANT_TTC,
+                    CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MONTANT_TTC,
                     CASE WHEN E.DO_Type = 0 THEN 'ACHAT' WHEN E.DO_Type = 5 THEN 'AVOIR FOURNISSEUR' ELSE CAST(E.DO_Type AS VARCHAR) END AS TypeDoc
                 FROM F_DOCENTETE E WITH (NOLOCK)
-                LEFT JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+                INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
                 LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
                 WHERE E.DO_Type IN (0, 5)
-                GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type, E.DO_Ttc
+                GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type
                 ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
             """
             try:
