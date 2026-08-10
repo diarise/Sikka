@@ -1,4 +1,4 @@
-# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v2.4)
+# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v2.4 - Fixed & Reinforced)
 import sqlite3
 import os
 import sys
@@ -6,6 +6,7 @@ import json
 import hashlib
 import platform
 import getpass
+import time
 from datetime import date, datetime
 from supabase import create_client
 
@@ -18,15 +19,19 @@ SUPABASE_URL = "https://pednybdwhfgosfxbrmvf.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBlZG55YmR3aGZnb3NmeGJybXZmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NjIwMjY3MCwiZXhwIjoyMTAxNzc4NjcwfQ.lMnWE-0sPmdtxjy2Spt_aDnHPncw9xzCrZVpT16rgKk"
 
 def pause_on_exit(msg="Appuyez sur Entrée pour fermer..."):
-    input(f"\n{msg}")
+    """Ne bloque sur une saisie que si le script est exécuté dans un terminal interactif."""
+    if sys.stdin and sys.stdin.isatty():
+        input(f"\n{msg}")
     sys.exit(1)
 
 def get_base_dir():
+    """Retourne le dossier absolu où réside le script ou l'exécutable."""
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
-    return "."
+    return os.path.dirname(os.path.abspath(__file__))
 
 def get_hardware_fingerprint():
+    """Génère l'empreinte matérielle unique du serveur."""
     raw_info = platform.node() + platform.machine() + platform.processor()
     return hashlib.sha256(raw_info.encode()).hexdigest()[:16]
 
@@ -35,7 +40,13 @@ def auto_activate_and_verify():
     config_path = os.path.join(get_base_dir(), "db_config.json")
     current_hw_id = get_hardware_fingerprint()
 
-    if not os.path.exists(license_path):
+    # Si la licence ou la config est absente
+    if not os.path.exists(license_path) or not os.path.exists(config_path):
+        # Sécurité pour les exécutions en tâche de fond / sous-processus sans terminal
+        if not (sys.stdin and sys.stdin.isatty()):
+            print("❌ Configuration ou licence manquante. L'activation initiale requiert un terminal interactif.")
+            sys.exit(1)
+
         print("⚡ No license found. Initiating Sikka auto-activation & POS discovery...")
         tenant_id = input("Entrez l'ID de la boutique Sikka (ex: NAS-MEDINA-01) : ").strip()
         
@@ -52,7 +63,7 @@ def auto_activate_and_verify():
         try:
             driver = "{ODBC Driver 17 for SQL Server}"
             master_conn_str = f"DRIVER={driver};SERVER={server};DATABASE=master;UID={user};PWD={password};TrustServerCertificate=yes;Encrypt=no;"
-            conn = pyodbc.connect(master_conn_str, timeout=5)
+            conn = pyodbc.connect(master_conn_str, timeout=30)
             conn.autocommit = True
             cursor = conn.cursor()
 
@@ -113,6 +124,7 @@ def auto_activate_and_verify():
             print(f"❌ Erreur d'enregistrement cloud Supabase : {e}")
             pause_on_exit()
 
+    # Lecture si déjà activé
     try:
         with open(license_path, "r") as f:
             license_data = json.load(f)
@@ -120,46 +132,72 @@ def auto_activate_and_verify():
             db_config = json.load(f)
             
         if license_data.get("hw_id") != current_hw_id:
-            print("ERREUR DE SÉCURITÉ : La licence ne correspond pas au matériel.")
+            print("❌ ERREUR DE SÉCURITÉ : La licence ne correspond pas au matériel.")
             pause_on_exit()
             
         return license_data.get("tenant_id"), db_config
     except Exception as e:
-        print(f"ERREUR DE CONFIGURATION : {e}")
+        print(f"❌ ERREUR DE CONFIGURATION : {e}")
         pause_on_exit()
 
 def is_module_enabled(sb, tenant_id, module_key):
-    """Check Supabase tenant settings to see if a module is toggled active."""
+    """Vérifie si un module est activé pour le tenant dans Supabase."""
     try:
         response = sb.table("tenant_settings").select("is_enabled").eq("tenant_id", tenant_id).eq("module_key", module_key).execute()
         if response.data and len(response.data) > 0:
-            return response.data[0].get("is_enabled", True) # Default to True if explicitly configured or fallback
+            return response.data[0].get("is_enabled", True)
     except Exception:
         pass
-    return True # Default fallback if setting hasn't been initialized yet
+    return True
+
+def execute_query_with_retry(cursor, query, retries=3, delay=5):
+    """Exécute une requête SQL avec mécanisme de plusieurs tentatives en cas de micro-coupure."""
+    for attempt in range(retries):
+        try:
+            cursor.execute(query)
+            return cursor.fetchall()
+        except (pyodbc.OperationalError, pyodbc.ProgrammingError) as e:
+            print(f"⚠️ Erreur d'exécution SQL (tentative {attempt+1}/{retries}): {e}")
+            if attempt < retries - 1:
+                time.sleep(delay)
+                continue
+            else:
+                raise
+        except Exception as e:
+            raise
 
 def pull_and_push_modular_data(db_config, tenant_id):
-    """Pulls full matrix datasets matching exact client query formats and syncs to Supabase based on feature toggles."""
+    """Extrait les matrices Ventes, Achats et Caisse puis synchronise vers Supabase."""
     if not pyodbc:
+        print("❌ pyodbc non disponible.")
         return
+    
+    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+    
+    driver = "{ODBC Driver 17 for SQL Server}"
+    conn_str = (
+        f"DRIVER={driver};"
+        f"SERVER={db_config['server']};"
+        f"DATABASE={db_config['database']};"
+        f"UID={db_config['username']};"
+        f"PWD={db_config['password']};"
+        f"TrustServerCertificate=yes;Encrypt=no;"
+    )
+    
+    conn = None
+    cursor = None
     try:
-        sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-        
-        driver = "{ODBC Driver 17 for SQL Server}"
-        conn_str = (
-            f"DRIVER={driver};"
-            f"SERVER={db_config['server']};"
-            f"DATABASE={db_config['database']};"
-            f"UID={db_config['username']};"
-            f"PWD={db_config['password']};"
-            f"TrustServerCertificate=yes;Encrypt=no;"
-        )
-        conn = pyodbc.connect(conn_str, timeout=10)
+        conn = pyodbc.connect(conn_str, timeout=30)
         cursor = conn.cursor()
+        print(f"[{tenant_id}] Connexion SQL établie.")
+    except Exception as e:
+        print(f"[{tenant_id}] ❌ Échec de connexion SQL : {e}")
+        return
 
-        # 1. VENTES SYNC (Controlled by feature toggle 'sales')
+    try:
+        # 1. VENTIES
         if is_module_enabled(sb, tenant_id, "sales"):
-            cursor.execute("""
+            query_ventes = """
                 SELECT TOP 50 
                     E.DO_Piece AS NumFacture,
                     CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
@@ -173,23 +211,63 @@ def pull_and_push_modular_data(db_config, tenant_id):
                 WHERE E.DO_Type IN (6, 7)
                 GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type
                 ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
-            """)
-            columns = [column[0] for column in cursor.description]
-            ventes_rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
-            
-            if ventes_rows:
-                sb.table("tenant_ventes_matrix").upsert({
-                    "tenant_id": tenant_id, 
-                    "data": json.loads(json.dumps(ventes_rows, default=str)), 
-                    "updated_at": str(datetime.now())
-                }, on_conflict="tenant_id").execute()
-                print(f"[{tenant_id}] Synchronisation Ventes réussie ({len(ventes_rows)} lignes).")
+            """
+            try:
+                rows = execute_query_with_retry(cursor, query_ventes)
+                columns = [col[0] for col in cursor.description]
+                ventes_rows = [dict(zip(columns, row)) for row in rows]
+                if ventes_rows:
+                    sb.table("tenant_ventes_matrix").upsert({
+                        "tenant_id": tenant_id, 
+                        "data": json.loads(json.dumps(ventes_rows, default=str)), 
+                        "updated_at": str(datetime.now())
+                    }, on_conflict="tenant_id").execute()
+                    print(f"[{tenant_id}] ✅ Ventes : {len(ventes_rows)} lignes.")
+                else:
+                    print(f"[{tenant_id}] ⚠️ Ventes : aucune ligne.")
+            except Exception as e:
+                print(f"[{tenant_id}] ❌ Erreur VENTES : {e}")
         else:
             print(f"[{tenant_id}] Module 'sales' désactivé par l'administrateur.")
 
-        # 2. CAISSE SYNC (Controlled by feature toggle 'caisse')
+        # 2. ACHATS
+        if is_module_enabled(sb, tenant_id, "achats"):
+            query_achats = """
+                SELECT TOP 50 
+                    E.DO_Piece AS NumFacture,
+                    CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
+                    E.DO_Tiers AS CodeFournisseur,
+                    ISNULL(C.CT_Intitule, 'FOURNISSEUR INCONNU') AS NomFournisseur,
+                    CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MontantTTC,
+                    CASE WHEN E.DO_Type = 0 THEN 'ACHAT' WHEN E.DO_Type = 5 THEN 'AVOIR FOURNISSEUR' ELSE CAST(E.DO_Type AS VARCHAR) END AS TypeDoc
+                FROM F_DOCENTETE E WITH (NOLOCK)
+                INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+                LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
+                WHERE E.DO_Type IN (0, 5)
+                GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type
+                ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
+            """
+            try:
+                rows = execute_query_with_retry(cursor, query_achats)
+                columns = [col[0] for col in cursor.description]
+                achats_rows = [dict(zip(columns, row)) for row in rows]
+                if achats_rows:
+                    sb.table("tenant_achats_matrix").upsert({
+                        "tenant_id": tenant_id, 
+                        "data": json.loads(json.dumps(achats_rows, default=str)), 
+                        "updated_at": str(datetime.now())
+                    }, on_conflict="tenant_id").execute()
+                    print(f"[{tenant_id}] ✅ Achats : {len(achats_rows)} lignes.")
+                else:
+                    print(f"[{tenant_id}] ⚠️ Achats : aucune ligne.")
+            except Exception as e:
+                print(f"[{tenant_id}] ❌ Erreur ACHATS : {e}")
+        else:
+            print(f"[{tenant_id}] Module 'achats' désactivé par l'administrateur.")
+
+        # 3. CAISSE
         if is_module_enabled(sb, tenant_id, "caisse"):
-            cursor.execute("""
+            query_caisse = """
                 SELECT TOP 200 
                     R.RG_No AS NUM_REGLEMENT, CONVERT(VARCHAR(10), R.RG_Date, 126) AS DATE_MVT,
                     R.CT_NumPayeur AS CPTE_TIERS, ISNULL(C.CT_Intitule, 'DIVERS') AS NOM_TIERS,
@@ -201,24 +279,33 @@ def pull_and_push_modular_data(db_config, tenant_id):
                 LEFT JOIN F_COMPTET C WITH (NOLOCK) ON R.CT_NumPayeur = C.CT_Num
                 LEFT JOIN F_CAISSE CA WITH (NOLOCK) ON R.CA_No = CA.CA_No
                 ORDER BY R.RG_Date DESC, R.RG_No;
-            """)
-            c_cols = [col[0] for col in cursor.description]
-            caisse_rows = [dict(zip(c_cols, row)) for row in cursor.fetchall()]
-            if caisse_rows:
-                sb.table("tenant_caisse_matrix").upsert({
-                    "tenant_id": tenant_id, 
-                    "data": json.loads(json.dumps(caisse_rows, default=str)), 
-                    "updated_at": str(datetime.now())
-                }, on_conflict="tenant_id").execute()
-                print(f"[{tenant_id}] Synchronisation Caisse réussie ({len(caisse_rows)} lignes).")
+            """
+            try:
+                rows = execute_query_with_retry(cursor, query_caisse)
+                columns = [col[0] for col in cursor.description]
+                caisse_rows = [dict(zip(columns, row)) for row in rows]
+                if caisse_rows:
+                    sb.table("tenant_caisse_matrix").upsert({
+                        "tenant_id": tenant_id, 
+                        "data": json.loads(json.dumps(caisse_rows, default=str)), 
+                        "updated_at": str(datetime.now())
+                    }, on_conflict="tenant_id").execute()
+                    print(f"[{tenant_id}] ✅ Caisse : {len(caisse_rows)} lignes.")
+                else:
+                    print(f"[{tenant_id}] ⚠️ Caisse : aucune ligne.")
+            except Exception as e:
+                print(f"[{tenant_id}] ❌ Erreur CAISSE : {e}")
         else:
             print(f"[{tenant_id}] Module 'caisse' désactivé par l'administrateur.")
 
-        cursor.close()
-        conn.close()
-        print(f"[{tenant_id}] Synchronisation modulaire des matrices terminée.")
     except Exception as e:
-        print(f"⚠️ Erreur sync modulaire : {e}")
+        print(f"[{tenant_id}] ❌ Erreur générale sync : {e}")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+            print(f"[{tenant_id}] Connexion SQL fermée.")
 
 def sync():
     result = auto_activate_and_verify()
@@ -229,4 +316,5 @@ def sync():
 
 if __name__ == "__main__":
     sync()
-    input("\nOpération terminée. Appuyez sur Entrée pour quitter...")
+    if sys.stdin and sys.stdin.isatty():
+        input("\nOpération terminée. Appuyez sur Entrée pour quitter...")
