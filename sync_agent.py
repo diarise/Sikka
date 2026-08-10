@@ -195,7 +195,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         return
 
     try:
-        # 1. VENTIES
+        # 1. VENTES (Aliased with MONTANT_TTC for UI consistency)
         if is_module_enabled(sb, tenant_id, "sales"):
             query_ventes = """
                 SELECT TOP 50 
@@ -203,7 +203,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
                     CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
                     E.DO_Tiers AS CodeClient,
                     ISNULL(C.CT_Intitule, 'CLIENT INCONNU') AS NomClient,
-                    CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MontantTTC,
+                    CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MONTANT_TTC,
                     CASE WHEN E.DO_Type = 6 THEN 'FACTURE' WHEN E.DO_Type = 7 THEN 'AVOIR' ELSE CAST(E.DO_Type AS VARCHAR) END AS TypeDoc
                 FROM F_DOCENTETE E WITH (NOLOCK)
                 INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
@@ -230,7 +230,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         else:
             print(f"[{tenant_id}] Module 'sales' désactivé par l'administrateur.")
 
-        # 2. ACHATS
+        # 2. ACHATS (Aliased with MONTANT_TTC for consistency)
         if is_module_enabled(sb, tenant_id, "achats"):
             query_achats = """
                 SELECT TOP 50 
@@ -238,7 +238,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
                     CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
                     E.DO_Tiers AS CodeFournisseur,
                     ISNULL(C.CT_Intitule, 'FOURNISSEUR INCONNU') AS NomFournisseur,
-                    CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MontantTTC,
+                    CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MONTANT_TTC,
                     CASE WHEN E.DO_Type = 0 THEN 'ACHAT' WHEN E.DO_Type = 5 THEN 'AVOIR FOURNISSEUR' ELSE CAST(E.DO_Type AS VARCHAR) END AS TypeDoc
                 FROM F_DOCENTETE E WITH (NOLOCK)
                 INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
@@ -265,7 +265,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         else:
             print(f"[{tenant_id}] Module 'achats' désactivé par l'administrateur.")
 
-# 3. CAISSE (Updated for today's live transactions)
+        # 3. CAISSE (Aliased with ENTREE_CAISSE)
         if is_module_enabled(sb, tenant_id, "caisse"):
             query_caisse = """
                 SELECT TOP 200 
