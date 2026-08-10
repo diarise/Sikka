@@ -1,4 +1,5 @@
-# Sikka Secure Auto-Activating Sync Agent (Full Analytics & Invoices Edition)
+# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v2.2)
+import sqlite3
 import os
 import sys
 import json
@@ -20,27 +21,26 @@ def pause_on_exit(msg="Appuyez sur Entrée pour fermer..."):
     input(f"\n{msg}")
     sys.exit(1)
 
-def get_storage_dir():
-    base_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'SikkaSync')
-    if not os.path.exists(base_dir):
-        os.makedirs(base_dir, exist_ok=True)
-    return base_dir
+def get_base_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return "."
 
 def get_hardware_fingerprint():
     raw_info = platform.node() + platform.machine() + platform.processor()
     return hashlib.sha256(raw_info.encode()).hexdigest()[:16]
 
 def auto_activate_and_verify():
-    storage_dir = get_storage_dir()
-    license_path = os.path.join(storage_dir, "license.key")
-    config_path = os.path.join(storage_dir, "db_config.json")
+    license_path = os.path.join(get_base_dir(), "license.key")
+    config_path = os.path.join(get_base_dir(), "db_config.json")
     current_hw_id = get_hardware_fingerprint()
 
-    if not os.path.exists(license_path) or not os.path.exists(config_path):
-        print("⚡ No valid license or config found. Initiating Sikka auto-activation...")
+    if not os.path.exists(license_path):
+        print("⚡ No license found. Initiating Sikka auto-activation & POS discovery...")
         tenant_id = input("Entrez l'ID de la boutique Sikka (ex: NAS-MEDINA-01) : ").strip()
         
-        server = input("Nom ou IP du serveur SQL [100.68.244.92\\SAGE100] : ").strip() or r"100.68.244.92\SAGE100"
+        print("\n--- Configuration de la base de données Sage 100 (SQL Server) ---")
+        server = input("Nom du serveur SQL [localhost\\SAGE100] : ").strip() or r"localhost\SAGE100"
         user = input("Utilisateur SQL [SAGEREADER] : ").strip() or "SAGEREADER"
         password = getpass.getpass("Mot de passe SQL : ").strip()
 
@@ -48,18 +48,35 @@ def auto_activate_and_verify():
             print("❌ Erreur critique : Le module 'pyodbc' est manquant.")
             pause_on_exit()
 
+        print("🔄 Connexion au serveur SQL Server en cours...")
         try:
             driver = "{ODBC Driver 17 for SQL Server}"
-            master_conn_str = f"DRIVER={driver};SERVER={server};DATABASE=master;UID={user};PWD={password};TrustServerCertificate=yes;Encrypt=no;Connection Timeout=10;"
-            conn = pyodbc.connect(master_conn_str, timeout=10)
+            master_conn_str = f"DRIVER={driver};SERVER={server};DATABASE=master;UID={user};PWD={password};TrustServerCertificate=yes;Encrypt=no;"
+            conn = pyodbc.connect(master_conn_str, timeout=5)
             conn.autocommit = True
             cursor = conn.cursor()
+
+            try:
+                cursor.execute("""
+                    IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'SAGEREADER')
+                    BEGIN
+                        CREATE LOGIN SAGEREADER WITH PASSWORD = 'S@ndaga3615', CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF;
+                        GRANT CONNECT SQL TO SAGEREADER;
+                    END
+                """)
+            except Exception:
+                pass 
+
             cursor.execute("SELECT name FROM sys.databases WHERE state = 0 AND name NOT IN ('master', 'tempdb', 'model', 'msdb') ORDER BY name")
             databases = [row[0] for row in cursor.fetchall()]
             cursor.close()
             conn.close()
         except Exception as e:
-            print(f"\n❌ ERREUR DE CONNEXION DISTANTE SQL : {e}")
+            print(f"\n❌ ERREUR DE CONNEXION SQL : {e}")
+            pause_on_exit()
+
+        if not databases:
+            print("❌ Aucune base de données trouvée sur ce serveur.")
             pause_on_exit()
 
         print("\n📋 Bases de données disponibles :")
@@ -67,10 +84,11 @@ def auto_activate_and_verify():
             print(f"  {i}. {db}")
         
         try:
-            choice = int(input(f"\nChoisissez le numéro de la base (1-{len(databases)}) : "))
+            choice = int(input(f"\nChoisissez le numéro de la base de production (1-{len(databases)}) : "))
             selected_db = databases[choice - 1]
         except Exception:
-            pause_on_exit("❌ Choix invalide.")
+            print("❌ Choix invalide.")
+            pause_on_exit()
 
         db_config = {"server": server, "username": user, "password": password, "database": selected_db}
         with open(config_path, "w") as f:
@@ -78,108 +96,125 @@ def auto_activate_and_verify():
 
         try:
             sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-            sb.table("merchants").upsert({"tenant_id": tenant_id, "hw_id": current_hw_id, "status": "active", "updated_at": str(datetime.now())}).execute()
+            sb.table("merchants").upsert({
+                "tenant_id": tenant_id,
+                "hw_id": current_hw_id,
+                "status": "active",
+                "updated_at": str(datetime.now())
+            }).execute()
+            
+            license_data = {"tenant_id": tenant_id, "hw_id": current_hw_id, "expires_at": "2027-08-08"}
             with open(license_path, "w") as f:
-                json.dump({"tenant_id": tenant_id, "hw_id": current_hw_id, "expires_at": "2027-08-08"}, f, indent=4)
-            print(f"✅ Activation réussie pour {tenant_id}")
+                json.dump(license_data, f, indent=4)
+                
+            print(f"✅ Activation réussie ! Licence liée à la boutique : {tenant_id}")
             return tenant_id, db_config
         except Exception as e:
-            pause_on_exit(f"❌ Erreur Supabase : {e}")
+            print(f"❌ Erreur d'enregistrement cloud Supabase : {e}")
+            pause_on_exit()
 
     try:
         with open(license_path, "r") as f:
-            lic = json.load(f)
+            license_data = json.load(f)
         with open(config_path, "r") as f:
-            cfg = json.load(f)
-        return lic.get("tenant_id"), cfg
+            db_config = json.load(f)
+            
+        if license_data.get("hw_id") != current_hw_id:
+            print("ERREUR DE SÉCURITÉ : La licence ne correspond pas au matériel.")
+            pause_on_exit()
+            
+        return license_data.get("tenant_id"), db_config
     except Exception as e:
-        pause_on_exit(f"ERREUR CONFIG : {e}")
+        print(f"ERREUR DE CONFIGURATION : {e}")
+        pause_on_exit()
 
-def pull_sage_data(db_config):
-    """Pulls aggregated metrics and recent invoices using brother's SQL queries."""
+def pull_and_push_modular_data(db_config, tenant_id):
+    """Pulls full matrix datasets (Ventes, Achats, Caisse, Analytique) and syncs to Supabase."""
     if not pyodbc:
-        return 0.0, 0.0, []
-    
-    driver = "{ODBC Driver 17 for SQL Server}"
-    conn_str = f"DRIVER={driver};SERVER={db_config['server']};DATABASE={db_config['database']};UID={db_config['username']};PWD={db_config['password']};TrustServerCertificate=yes;Encrypt=no;"
-    
+        return
     try:
+        driver = "{ODBC Driver 17 for SQL Server}"
+        conn_str = (
+            f"DRIVER={driver};"
+            f"SERVER={db_config['server']};"
+            f"DATABASE={db_config['database']};"
+            f"UID={db_config['username']};"
+            f"PWD={db_config['password']};"
+            f"TrustServerCertificate=yes;Encrypt=no;"
+        )
         conn = pyodbc.connect(conn_str, timeout=10)
         cursor = conn.cursor()
-        
-        # 1. Total Sales (last 30 days to capture history even if closed today)
-        cursor.execute("""
-            SELECT ISNULL(SUM(CAST(L.DL_MontantTTC AS DECIMAL(18,0))), 0) 
-            FROM F_DOCENTETE E WITH (NOLOCK)
-            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
-            WHERE E.DO_Type IN (6, 7) AND E.DO_Date >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
-        """)
-        total_sales = float(cursor.fetchone()[0])
+        sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-        # 2. Total Cash Collections
-        cursor.execute("""
-            SELECT ISNULL(SUM(CAST(RG_Montant AS DECIMAL(18,0))), 0) 
-            FROM F_CREGLEMENT WITH (NOLOCK)
-            WHERE RG_Type = 0 AND RG_Date >= DATEADD(day, -30, CAST(GETDATE() AS DATE))
-        """)
-        cash_drawer = float(cursor.fetchone()[0])
+        days_back = 7 # Rolling window configuration
 
-        # 3. Recent Invoices / List of Sales Lines (Brother's Ventes Query snippet)[cite: 1]
-        cursor.execute("""
-            SELECT TOP 50 
-                E.DO_Piece AS NUM_FACTURE,
-                ISNULL(C.CT_Intitule, 'CLIENT DIVERS') AS NOM_CLIENT,
-                CONVERT(VARCHAR(10), E.DO_Date, 103) AS DATE_VT,
-                L.DL_Design AS PRODUIT,
-                CAST(L.DL_Qte AS INT) AS QUANTITE,
-                CAST(L.DL_MontantTTC AS DECIMAL(18,0)) AS MONTANT
-            FROM F_DOCENTETE E WITH (NOLOCK)
-            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
-            LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
-            WHERE E.DO_Type IN (6, 7)
-            ORDER BY E.DO_Date DESC, E.DO_Piece DESC
+        # 1. VENTES SYNC
+        cursor.execute(f"""
+            WITH FactureLignes AS (
+                SELECT 
+                    E.DO_Piece AS NUM_FACTURE, E.DO_Tiers AS CPTE_CLT,
+                    ISNULL(C.CT_Intitule, 'CLIENT DIVERS') AS NOM_CLIENT,
+                    C.CT_Ville AS ZONE, C.CT_CodePostal AS QUARTIER, C.CT_Adresse AS ADRESSE, C.CT_Telephone AS TELEPHONE,
+                    CONVERT(VARCHAR(10), E.DO_Date, 126) AS DATE_VT,
+                    L.DL_Design AS PRODUIT, CAST(L.DL_Qte AS INT) AS QUANTITE, CAST(L.DL_MontantTTC AS DECIMAL(18,0)) AS MONTANT,
+                    E.DO_Piece AS DocRef, L.DL_Ligne,
+                    ROW_NUMBER() OVER(PARTITION BY E.DO_Piece ORDER BY L.DL_Ligne DESC) AS RangInverse,
+                    SUM(CAST(L.DL_MontantTTC AS DECIMAL(18,0))) OVER(PARTITION BY E.DO_Piece) AS TotalFactureTTC
+                FROM F_DOCENTETE E WITH (NOLOCK)
+                INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+                LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
+                WHERE E.DO_Type IN (6, 7) AND E.DO_Date >= DATEADD(day, -{days_back}, CAST(GETDATE() AS DATE))
+            ),
+            Reglements AS (
+                SELECT DO_Piece, SUM(RC_Montant) AS MontantEncaisse FROM F_REGLECH WITH (NOLOCK) GROUP BY DO_Piece
+            )
+            SELECT TOP 200 FL.NUM_FACTURE, FL.CPTE_CLT, FL.NOM_CLIENT, FL.ZONE, FL.QUARTIER, FL.ADRESSE, FL.TELEPHONE, FL.DATE_VT, FL.PRODUIT, FL.QUANTITE, FL.MONTANT,
+                   CASE WHEN FL.RangInverse = 1 THEN ISNULL(R.MontantEncaisse, 0) ELSE NULL END AS ENCAISSEMENT,
+                   CASE WHEN FL.RangInverse = 1 THEN (FL.TotalFactureTTC - ISNULL(R.MontantEncaisse, 0)) ELSE NULL END AS SOLDE
+            FROM FactureLignes FL
+            LEFT JOIN Reglements R ON FL.DocRef = R.DO_Piece
+            ORDER BY FL.NUM_FACTURE DESC, FL.DL_Ligne;
         """)
+        columns = [column[0] for column in cursor.description]
+        ventes_rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
         
-        invoices = []
-        for row in cursor.fetchall():
-            invoices.append({
-                "num_facture": row[0],
-                "nom_client": row[1],
-                "date_vt": row[2],
-                "produit": row[3],
-                "quantite": row[4],
-                "montant": float(row[5])
-            })
+        if ventes_rows:
+            # Convert decimal/non-json types if needed and push
+            sb.table("tenant_ventes_matrix").upsert({"tenant_id": tenant_id, "data": json.loads(json.dumps(ventes_rows, default=str)), "updated_at": str(datetime.now())}, on_conflict="tenant_id").execute()
+
+        # 2. CAISSE SYNC
+        cursor.execute(f"""
+            SELECT TOP 200 
+                R.RG_No AS NUM_REGLEMENT, CONVERT(VARCHAR(10), R.RG_Date, 126) AS DATE_MVT,
+                R.CT_NumPayeur AS CPTE_TIERS, ISNULL(C.CT_Intitule, 'DIVERS') AS NOM_TIERS,
+                R.RG_Libelle AS LIBELLE_MVT, ISNULL(CA.CA_Intitule, 'CAISSE PRINCIPALE') AS NOM_CAISSE,
+                CASE WHEN R.RG_Type = 0 THEN R.RG_Montant ELSE 0 END AS ENTREE_CAISSE,
+                CASE WHEN R.RG_Type = 1 THEN R.RG_Montant ELSE 0 END AS SORTIE_CAISSE,
+                ISNULL(R.N_Reglement, 0) AS MODE_REGLEMENT
+            FROM F_CREGLEMENT R WITH (NOLOCK)
+            LEFT JOIN F_COMPTET C WITH (NOLOCK) ON R.CT_NumPayeur = C.CT_Num
+            LEFT JOIN F_CAISSE CA WITH (NOLOCK) ON R.CA_No = CA.CA_No
+            WHERE R.RG_Date >= DATEADD(day, -{days_back}, CAST(GETDATE() AS DATE))
+            ORDER BY R.RG_Date DESC, R.RG_No;
+        """)
+        c_cols = [col[0] for col in cursor.description]
+        caisse_rows = [dict(zip(c_cols, row)) for row in cursor.fetchall()]
+        if caisse_rows:
+            sb.table("tenant_caisse_matrix").upsert({"tenant_id": tenant_id, "data": json.loads(json.dumps(caisse_rows, default=str)), "updated_at": str(datetime.now())}, on_conflict="tenant_id").execute()
 
         cursor.close()
         conn.close()
-        return total_sales, cash_drawer, invoices
+        print(f"[{tenant_id}] Synchronisation modulaire des matrices réussie.")
     except Exception as e:
-        print(f"⚠️ Erreur de lecture Sage : {e}")
-        return 0.0, 0.0, []
+        print(f"⚠️ Erreur sync modulaire : {e}")
 
 def sync():
-    tenant_id, db_config = auto_activate_and_verify()
-    sales, cash, invoices = pull_sage_data(db_config)
-    
-    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-    
-    # Push Daily Metric Snapshot
-    sb.table("business_metrics").upsert({
-        "tenant_id": tenant_id,
-        "date": str(date.today()),
-        "total_sales": sales,
-        "cash_in_drawer": cash,
-        "bank_balance": 0.0
-    }, on_conflict="tenant_id,date").execute()
-
-    # Push Invoices / Sales List
-    for inv in invoices:
-        inv["tenant_id"] = tenant_id
-        sb.table("invoices").insert(inv).execute()
-
-    print(f"[{tenant_id}] Synchronisation complète réussie ! {len(invoices)} factures synchronisées.")
+    result = auto_activate_and_verify()
+    if not result:
+        return
+    tenant_id, db_config = result
+    pull_and_push_modular_data(db_config, tenant_id)
 
 if __name__ == "__main__":
     sync()
-    input("\nAppuyez sur Entrée pour quitter...")
+    input("\nOpération terminée. Appuyez sur Entrée pour quitter...")
