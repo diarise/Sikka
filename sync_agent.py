@@ -265,20 +265,23 @@ def pull_and_push_modular_data(db_config, tenant_id):
         else:
             print(f"[{tenant_id}] Module 'achats' désactivé par l'administrateur.")
 
-        # 3. CAISSE
+# 3. CAISSE (Updated for today's live transactions)
         if is_module_enabled(sb, tenant_id, "caisse"):
             query_caisse = """
                 SELECT TOP 200 
-                    R.RG_No AS NUM_REGLEMENT, CONVERT(VARCHAR(10), R.RG_Date, 126) AS DATE_MVT,
-                    R.CT_NumPayeur AS CPTE_TIERS, ISNULL(C.CT_Intitule, 'DIVERS') AS NOM_TIERS,
-                    R.RG_Libelle AS LIBELLE_MVT, ISNULL(CA.CA_Intitule, 'CAISSE PRINCIPALE') AS NOM_CAISSE,
+                    R.RG_No AS NUM_REGLEMENT, 
+                    CONVERT(VARCHAR(10), R.RG_Date, 103) AS DATE_MVT,
+                    ISNULL(C.CT_Intitule, 'DIVERS') AS NOM_TIERS,
+                    R.RG_Libelle AS LIBELLE_MVT, 
+                    ISNULL(CA.CA_Intitule, 'CAISSE PRINCIPALE') AS NOM_CAISSE,
                     CASE WHEN R.RG_Type = 0 THEN R.RG_Montant ELSE 0 END AS ENTREE_CAISSE,
                     CASE WHEN R.RG_Type = 1 THEN R.RG_Montant ELSE 0 END AS SORTIE_CAISSE,
-                    ISNULL(R.N_Reglement, 0) AS MODE_REGLEMENT
+                    R.N_Reglement AS MODE_REGLEMENT
                 FROM F_CREGLEMENT R WITH (NOLOCK)
                 LEFT JOIN F_COMPTET C WITH (NOLOCK) ON R.CT_NumPayeur = C.CT_Num
                 LEFT JOIN F_CAISSE CA WITH (NOLOCK) ON R.CA_No = CA.CA_No
-                ORDER BY R.RG_Date DESC, R.RG_No;
+                WHERE CAST(R.RG_Date AS DATE) = CAST(GETDATE() AS DATE)
+                ORDER BY R.RG_No DESC;
             """
             try:
                 rows = execute_query_with_retry(cursor, query_caisse)
