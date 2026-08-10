@@ -1,4 +1,4 @@
-# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v2.5 - Stable Production Fix)
+# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v2.6 - Continuous Daemon)
 import sqlite3
 import os
 import sys
@@ -192,7 +192,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         return
 
     try:
-        # 1. VENTES
+        # 1. VENTES (Avec jointure propre des lignes et sécurisation du total)
         if is_module_enabled(sb, tenant_id, "sales"):
             query_ventes = """
                 SELECT TOP 50 
@@ -219,7 +219,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
                         "data": json.loads(json.dumps(ventes_rows, default=str)), 
                         "updated_at": str(datetime.now())
                     }, on_conflict="tenant_id").execute()
-                    print(f"[{tenant_id}] ✅ Ventes : {len(ventes_rows)} lignes.")
+                    print(f"[{tenant_id}] ✅ Ventes : {len(ventes_rows)} lignes synchronisées.")
                 else:
                     print(f"[{tenant_id}] ⚠️ Ventes : aucune ligne.")
             except Exception as e:
@@ -227,7 +227,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         else:
             print(f"[{tenant_id}] Module 'sales' désactivé par l'administrateur.")
 
-        # 2. ACHATS
+        # 2. ACHATS & FOURNISSEURS (Requête frère intégrée et corrigée)
         if is_module_enabled(sb, tenant_id, "achats"):
             query_achats = """
                 SELECT TOP 50 
@@ -254,7 +254,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
                         "data": json.loads(json.dumps(achats_rows, default=str)), 
                         "updated_at": str(datetime.now())
                     }, on_conflict="tenant_id").execute()
-                    print(f"[{tenant_id}] ✅ Achats : {len(achats_rows)} lignes.")
+                    print(f"[{tenant_id}] ✅ Achats : {len(achats_rows)} lignes synchronisées.")
                 else:
                     print(f"[{tenant_id}] ⚠️ Achats : aucune ligne.")
             except Exception as e:
@@ -262,7 +262,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         else:
             print(f"[{tenant_id}] Module 'achats' désactivé par l'administrateur.")
 
-        # 3. CAISSE
+        # 3. CAISSE & MODES DE PAIEMENT MULTIPLES (Jointure avec P_REGLEMENT pour Wave, Espèces, etc.)
         if is_module_enabled(sb, tenant_id, "caisse"):
             query_caisse = """
                 SELECT TOP 200 
@@ -273,10 +273,11 @@ def pull_and_push_modular_data(db_config, tenant_id):
                     ISNULL(CA.CA_Intitule, 'CAISSE PRINCIPALE') AS NOM_CAISSE,
                     CASE WHEN R.RG_Type = 0 THEN R.RG_Montant ELSE 0 END AS ENTREE_CAISSE,
                     CASE WHEN R.RG_Type = 1 THEN R.RG_Montant ELSE 0 END AS SORTIE_CAISSE,
-                    R.N_Reglement AS MODE_REGLEMENT
+                    ISNULL(P.R_Intitule, 'Espèces / Autre') AS MODE_REGLEMENT
                 FROM F_CREGLEMENT R WITH (NOLOCK)
                 LEFT JOIN F_COMPTET C WITH (NOLOCK) ON R.CT_NumPayeur = C.CT_Num
                 LEFT JOIN F_CAISSE CA WITH (NOLOCK) ON R.CA_No = CA.CA_No
+                LEFT JOIN P_REGLEMENT P WITH (NOLOCK) ON R.N_Reglement = P.CbIndice
                 ORDER BY R.RG_No DESC;
             """
             try:
@@ -289,11 +290,11 @@ def pull_and_push_modular_data(db_config, tenant_id):
                         "data": json.loads(json.dumps(caisse_rows, default=str)), 
                         "updated_at": str(datetime.now())
                     }, on_conflict="tenant_id").execute()
-                    print(f"[{tenant_id}] ✅ Caisse : {len(caisse_rows)} lignes.")
+                    print(f"[{tenant_id}] ✅ Caisse : {len(caisse_rows)} lignes synchronisées.")
                 else:
                     print(f"[{tenant_id}] ⚠️ Caisse : aucune ligne.")
             except Exception as e:
-                print(f"[{tenant_id}] `[{tenant_id}] ❌ Erreur CAISSE : {e}")
+                print(f"[{tenant_id}] ❌ Erreur CAISSE : {e}")
         else:
             print(f"[{tenant_id}] Module 'caisse' désactivé par l'administrateur.")
 
@@ -314,6 +315,12 @@ def sync():
     pull_and_push_modular_data(db_config, tenant_id)
 
 if __name__ == "__main__":
-    sync()
-    if sys.stdin and sys.stdin.isatty():
-        input("\nOpération terminée. Appuyez sur Entrée pour quitter...")
+    print("🚀 Sikka Sync Agent démarré en mode continu (Daemon)...")
+    while True:
+        try:
+            sync()
+        except Exception as e:
+            print(f"⚠️ Erreur dans la boucle d'arrière-plan : {e}")
+        
+        print("⏳ Prochaine synchronisation dans 20 minutes...")
+        time.sleep(1200) # Pause de 20 minutes (1200 secondes)
