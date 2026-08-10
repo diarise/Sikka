@@ -1,4 +1,4 @@
-# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v2.4 - Fixed & Reinforced)
+# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v2.5 - Stable Production Fix)
 import sqlite3
 import os
 import sys
@@ -40,9 +40,7 @@ def auto_activate_and_verify():
     config_path = os.path.join(get_base_dir(), "db_config.json")
     current_hw_id = get_hardware_fingerprint()
 
-    # Si la licence ou la config est absente
     if not os.path.exists(license_path) or not os.path.exists(config_path):
-        # Sécurité pour les exécutions en tâche de fond / sous-processus sans terminal
         if not (sys.stdin and sys.stdin.isatty()):
             print("❌ Configuration ou licence manquante. L'activation initiale requiert un terminal interactif.")
             sys.exit(1)
@@ -124,7 +122,6 @@ def auto_activate_and_verify():
             print(f"❌ Erreur d'enregistrement cloud Supabase : {e}")
             pause_on_exit()
 
-    # Lecture si déjà activé
     try:
         with open(license_path, "r") as f:
             license_data = json.load(f)
@@ -195,7 +192,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         return
 
     try:
-        # 1. VENTES (Aliased with MONTANT_TTC for UI consistency)
+        # 1. VENTES
         if is_module_enabled(sb, tenant_id, "sales"):
             query_ventes = """
                 SELECT TOP 50 
@@ -203,13 +200,13 @@ def pull_and_push_modular_data(db_config, tenant_id):
                     CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
                     E.DO_Tiers AS CodeClient,
                     ISNULL(C.CT_Intitule, 'CLIENT INCONNU') AS NomClient,
-                    CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MONTANT_TTC,
+                    CAST(ISNULL(SUM(L.DL_MontantTTC), E.DO_Ttc) AS DECIMAL(18,2)) AS MONTANT_TTC,
                     CASE WHEN E.DO_Type = 6 THEN 'FACTURE' WHEN E.DO_Type = 7 THEN 'AVOIR' ELSE CAST(E.DO_Type AS VARCHAR) END AS TypeDoc
                 FROM F_DOCENTETE E WITH (NOLOCK)
-                INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+                LEFT JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
                 LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
                 WHERE E.DO_Type IN (6, 7)
-                GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type
+                GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type, E.DO_Ttc
                 ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
             """
             try:
@@ -230,7 +227,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         else:
             print(f"[{tenant_id}] Module 'sales' désactivé par l'administrateur.")
 
-        # 2. ACHATS (Aliased with MONTANT_TTC for consistency)
+        # 2. ACHATS
         if is_module_enabled(sb, tenant_id, "achats"):
             query_achats = """
                 SELECT TOP 50 
@@ -238,13 +235,13 @@ def pull_and_push_modular_data(db_config, tenant_id):
                     CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
                     E.DO_Tiers AS CodeFournisseur,
                     ISNULL(C.CT_Intitule, 'FOURNISSEUR INCONNU') AS NomFournisseur,
-                    CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MONTANT_TTC,
+                    CAST(ISNULL(SUM(L.DL_MontantTTC), E.DO_Ttc) AS DECIMAL(18,2)) AS MONTANT_TTC,
                     CASE WHEN E.DO_Type = 0 THEN 'ACHAT' WHEN E.DO_Type = 5 THEN 'AVOIR FOURNISSEUR' ELSE CAST(E.DO_Type AS VARCHAR) END AS TypeDoc
                 FROM F_DOCENTETE E WITH (NOLOCK)
-                INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+                LEFT JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
                 LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
                 WHERE E.DO_Type IN (0, 5)
-                GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type
+                GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type, E.DO_Ttc
                 ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
             """
             try:
@@ -265,7 +262,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         else:
             print(f"[{tenant_id}] Module 'achats' désactivé par l'administrateur.")
 
-        # 3. CAISSE (Aliased with ENTREE_CAISSE)
+        # 3. CAISSE
         if is_module_enabled(sb, tenant_id, "caisse"):
             query_caisse = """
                 SELECT TOP 200 
@@ -280,7 +277,6 @@ def pull_and_push_modular_data(db_config, tenant_id):
                 FROM F_CREGLEMENT R WITH (NOLOCK)
                 LEFT JOIN F_COMPTET C WITH (NOLOCK) ON R.CT_NumPayeur = C.CT_Num
                 LEFT JOIN F_CAISSE CA WITH (NOLOCK) ON R.CA_No = CA.CA_No
-                WHERE CAST(R.RG_Date AS DATE) = CAST(GETDATE() AS DATE)
                 ORDER BY R.RG_No DESC;
             """
             try:
@@ -297,7 +293,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
                 else:
                     print(f"[{tenant_id}] ⚠️ Caisse : aucune ligne.")
             except Exception as e:
-                print(f"[{tenant_id}] ❌ Erreur CAISSE : {e}")
+                print(f"[{tenant_id}] `[{tenant_id}] ❌ Erreur CAISSE : {e}")
         else:
             print(f"[{tenant_id}] Module 'caisse' désactivé par l'administrateur.")
 
