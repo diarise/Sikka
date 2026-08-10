@@ -1,4 +1,4 @@
-# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v2.2)
+# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v2.3)
 import sqlite3
 import os
 import sys
@@ -129,7 +129,7 @@ def auto_activate_and_verify():
         pause_on_exit()
 
 def pull_and_push_modular_data(db_config, tenant_id):
-    """Pulls full matrix datasets (Ventes, Achats, Caisse, Analytique) and syncs to Supabase."""
+    """Pulls full matrix datasets matching exact client query formats and syncs to Supabase."""
     if not pyodbc:
         return
     try:
@@ -146,41 +146,32 @@ def pull_and_push_modular_data(db_config, tenant_id):
         cursor = conn.cursor()
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-        days_back = 7 # Rolling window configuration
-
-        # 1. VENTES SYNC
+        # 1. VENTES SYNC (Exact query format matching client expectations)
         cursor.execute(f"""
-            WITH FactureLignes AS (
-                SELECT 
-                    E.DO_Piece AS NUM_FACTURE, E.DO_Tiers AS CPTE_CLT,
-                    ISNULL(C.CT_Intitule, 'CLIENT DIVERS') AS NOM_CLIENT,
-                    C.CT_Ville AS ZONE, C.CT_CodePostal AS QUARTIER, C.CT_Adresse AS ADRESSE, C.CT_Telephone AS TELEPHONE,
-                    CONVERT(VARCHAR(10), E.DO_Date, 126) AS DATE_VT,
-                    L.DL_Design AS PRODUIT, CAST(L.DL_Qte AS INT) AS QUANTITE, CAST(L.DL_MontantTTC AS DECIMAL(18,0)) AS MONTANT,
-                    E.DO_Piece AS DocRef, L.DL_Ligne,
-                    ROW_NUMBER() OVER(PARTITION BY E.DO_Piece ORDER BY L.DL_Ligne DESC) AS RangInverse,
-                    SUM(CAST(L.DL_MontantTTC AS DECIMAL(18,0))) OVER(PARTITION BY E.DO_Piece) AS TotalFactureTTC
-                FROM F_DOCENTETE E WITH (NOLOCK)
-                INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
-                LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
-                WHERE E.DO_Type IN (6, 7) AND E.DO_Date >= DATEADD(day, -{days_back}, CAST(GETDATE() AS DATE))
-            ),
-            Reglements AS (
-                SELECT DO_Piece, SUM(RC_Montant) AS MontantEncaisse FROM F_REGLECH WITH (NOLOCK) GROUP BY DO_Piece
-            )
-            SELECT TOP 200 FL.NUM_FACTURE, FL.CPTE_CLT, FL.NOM_CLIENT, FL.ZONE, FL.QUARTIER, FL.ADRESSE, FL.TELEPHONE, FL.DATE_VT, FL.PRODUIT, FL.QUANTITE, FL.MONTANT,
-                   CASE WHEN FL.RangInverse = 1 THEN ISNULL(R.MontantEncaisse, 0) ELSE NULL END AS ENCAISSEMENT,
-                   CASE WHEN FL.RangInverse = 1 THEN (FL.TotalFactureTTC - ISNULL(R.MontantEncaisse, 0)) ELSE NULL END AS SOLDE
-            FROM FactureLignes FL
-            LEFT JOIN Reglements R ON FL.DocRef = R.DO_Piece
-            ORDER BY FL.NUM_FACTURE DESC, FL.DL_Ligne;
+            SELECT TOP 50 
+                E.DO_Piece AS NumFacture,
+                CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
+                E.DO_Tiers AS CodeClient,
+                ISNULL(C.CT_Intitule, 'CLIENT INCONNU') AS NomClient,
+                CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MontantTTC,
+                CASE WHEN E.DO_Type = 6 THEN 'FACTURE' WHEN E.DO_Type = 7 THEN 'AVOIR' ELSE CAST(E.DO_Type AS VARCHAR) END AS TypeDoc
+            FROM F_DOCENTETE E WITH (NOLOCK)
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+            LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
+            WHERE E.DO_Type IN (6, 7)
+            GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type
+            ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
         """)
         columns = [column[0] for column in cursor.description]
         ventes_rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
         
         if ventes_rows:
-            # Convert decimal/non-json types if needed and push
-            sb.table("tenant_ventes_matrix").upsert({"tenant_id": tenant_id, "data": json.loads(json.dumps(ventes_rows, default=str)), "updated_at": str(datetime.now())}, on_conflict="tenant_id").execute()
+            sb.table("tenant_ventes_matrix").upsert({
+                "tenant_id": tenant_id, 
+                "data": json.loads(json.dumps(ventes_rows, default=str)), 
+                "updated_at": str(datetime.now())
+            }, on_conflict="tenant_id").execute()
+            print(f"[{tenant_id}] Synchronisation Ventes réussie ({len(ventes_rows)} lignes).")
 
         # 2. CAISSE SYNC
         cursor.execute(f"""
@@ -194,13 +185,16 @@ def pull_and_push_modular_data(db_config, tenant_id):
             FROM F_CREGLEMENT R WITH (NOLOCK)
             LEFT JOIN F_COMPTET C WITH (NOLOCK) ON R.CT_NumPayeur = C.CT_Num
             LEFT JOIN F_CAISSE CA WITH (NOLOCK) ON R.CA_No = CA.CA_No
-            WHERE R.RG_Date >= DATEADD(day, -{days_back}, CAST(GETDATE() AS DATE))
             ORDER BY R.RG_Date DESC, R.RG_No;
         """)
         c_cols = [col[0] for col in cursor.description]
         caisse_rows = [dict(zip(c_cols, row)) for row in cursor.fetchall()]
         if caisse_rows:
-            sb.table("tenant_caisse_matrix").upsert({"tenant_id": tenant_id, "data": json.loads(json.dumps(caisse_rows, default=str)), "updated_at": str(datetime.now())}, on_conflict="tenant_id").execute()
+            sb.table("tenant_caisse_matrix").upsert({
+                "tenant_id": tenant_id, 
+                "data": json.loads(json.dumps(caisse_rows, default=str)), 
+                "updated_at": str(datetime.now())
+            }, on_conflict="tenant_id").execute()
 
         cursor.close()
         conn.close()
