@@ -301,17 +301,22 @@ def pull_and_push_modular_data(db_config, tenant_id):
         """,
         ),
         "evolution_ca": (
-            "tenant_evolution_ca_matrix",
+            "tenant_evolution_journaliere_matrix",
             """
             SELECT 
-                CAST(YEAR(E.DO_Date) AS VARCHAR) + '-' + RIGHT('0' + CAST(MONTH(E.DO_Date) AS VARCHAR), 2) AS Periode,
-                SUM(L.DL_MontantTTC) AS CA_Mensuel, 
-                COUNT(DISTINCT E.DO_Piece) AS NbFactures
-            FROM F_DOCENTETE E WITH (NOLOCK) 
-            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
+                CONVERT(VARCHAR(10), E.DO_Date, 120) AS DateJour,
+                CAST(SUM(CASE WHEN E.DO_Type IN (6, 7) THEN L.DL_MontantTTC ELSE 0 END) AS DECIMAL(18,2)) AS CA_Jour,
+                ISNULL(T.TotalEncaisse, 0) AS Encaisse_Jour
+            FROM F_DOCENTETE E WITH (NOLOCK)
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+            LEFT JOIN (
+                SELECT CAST(RG_Date AS DATE) AS RDate, SUM(RG_Montant) AS TotalEncaisse
+                FROM F_CREGLEMENT WITH (NOLOCK)
+                GROUP BY CAST(RG_Date AS DATE)
+            ) T ON CAST(E.DO_Date AS DATE) = T.RDate
             WHERE E.DO_Type IN (6, 7)
-            GROUP BY YEAR(E.DO_Date), MONTH(E.DO_Date) 
-            ORDER BY YEAR(E.DO_Date) ASC, MONTH(E.DO_Date) ASC;
+            GROUP BY E.DO_Date, T.TotalEncaisse
+            ORDER BY E.DO_Date ASC;
         """,
         ),
         "rotation": (
