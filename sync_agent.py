@@ -1,4 +1,4 @@
-# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v3.0 - Continuous Daemon)
+# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v3.1 - Continuous Daemon)
 import sqlite3
 import os
 import sys
@@ -19,19 +19,16 @@ SUPABASE_URL = "https://pednybdwhfgosfxbrmvf.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBlZG55YmR3aGZnb3NmeGJybXZmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NjIwMjY3MCwiZXhwIjoyMTAxNzc4NjcwfQ.lMnWE-0sPmdtxjy2Spt_aDnHPncw9xzCrZVpT16rgKk"
 
 def pause_on_exit(msg="Appuyez sur Entrée pour fermer..."):
-    """Ne bloque sur une saisie que si le script est exécuté dans un terminal interactif."""
     if sys.stdin and sys.stdin.isatty():
         input(f"\n{msg}")
     sys.exit(1)
 
 def get_base_dir():
-    """Retourne le dossier absolu où réside le script ou l'exécutable."""
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
 def get_hardware_fingerprint():
-    """Génère l'empreinte matérielle unique du serveur."""
     raw_info = platform.node() + platform.machine() + platform.processor()
     return hashlib.sha256(raw_info.encode()).hexdigest()[:16]
 
@@ -138,7 +135,6 @@ def auto_activate_and_verify():
         pause_on_exit()
 
 def is_module_enabled(sb, tenant_id, module_key):
-    """Vérifie si un module est activé pour le tenant dans Supabase."""
     try:
         response = sb.table("tenant_settings").select("is_enabled").eq("tenant_id", tenant_id).eq("module_key", module_key).execute()
         if response.data and len(response.data) > 0:
@@ -148,7 +144,6 @@ def is_module_enabled(sb, tenant_id, module_key):
     return True
 
 def execute_query_with_retry(cursor, query, retries=3, delay=5):
-    """Exécute une requête SQL avec mécanisme de plusieurs tentatives en cas de micro-coupure."""
     for attempt in range(retries):
         try:
             cursor.execute(query)
@@ -164,13 +159,21 @@ def execute_query_with_retry(cursor, query, retries=3, delay=5):
             raise
 
 def pull_and_push_modular_data(db_config, tenant_id):
-    """Extrait les matrices opérationnelles et synchronise vers Supabase."""
     if not pyodbc:
         print("❌ pyodbc non disponible.")
         return
     
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
     
+    # Send agent heartbeat so dashboard knows agent is alive
+    try:
+        sb.table("merchants").update({
+            "status": "active",
+            "updated_at": str(datetime.now())
+        }).eq("tenant_id", tenant_id).execute()
+    except Exception:
+        pass
+
     driver = "{ODBC Driver 17 for SQL Server}"
     conn_str = (
         f"DRIVER={driver};"
@@ -186,12 +189,11 @@ def pull_and_push_modular_data(db_config, tenant_id):
     try:
         conn = pyodbc.connect(conn_str, timeout=30)
         cursor = conn.cursor()
-        print(f"[{tenant_id}] Connexion SQL établie.")
+        print(f"[{tenant_id}] Connexion SQL établie à {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     except Exception as e:
         print(f"[{tenant_id}] ❌ Échec de connexion SQL : {e}")
         return
 
-    # Dictionnaire complet des requêtes avec une indentation propre et valide
     queries_map = {
         "sales": (
             "tenant_ventes_matrix",
@@ -376,7 +378,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
                 CASE WHEN E.DO_Type = 20 THEN 'ENTRÉE' ELSE 'SORTIE' END AS Sens, 
                 L.DL_MontantTTC AS Montant
             FROM F_DOCENTETE E WITH (NOLOCK) 
-            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = E.DO_Type 
             WHERE E.DO_Type IN (20, 21) 
             ORDER BY E.DO_Date DESC;
         """,
@@ -397,7 +399,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
                     ELSE CAST(E.DO_Type AS VARCHAR) 
                 END AS Type
             FROM F_DOCENTETE E WITH (NOLOCK) 
-            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = E.DO_Type 
             GROUP BY E.DO_Date, E.DO_Piece, E.DO_Tiers, E.DO_Type 
             ORDER BY E.DO_Date DESC;
         """,
@@ -472,37 +474,34 @@ def pull_and_push_modular_data(db_config, tenant_id):
                             "data": json.loads(json.dumps(data_rows, default=str)),
                             "updated_at": str(datetime.now())
                         }, on_conflict="tenant_id").execute()
-                        print(f"[{tenant_id}] ✅ {module_key.capitalize()} : {len(data_rows)} lignes synchronisées.")
-                    else:
-                        print(f"[{tenant_id}] ⚠️ {module_key.capitalize()} : aucune ligne.")
                 except Exception as e:
-                    print(f"[{tenant_id}] ❌ Erreur {module_key} : {e}")
-            else:
-                print(f"[{tenant_id}] Module '{module_key}' désactivé par l'administrateur.")
+                    print(f"[{tenant_id}] ⚠️ Erreur module {module_key} : {e}")
+            
+        print(f"[{tenant_id}] ✨ Synchronisation réussie à {datetime.now().strftime('%H:%M:%S')}")
 
     except Exception as e:
-        print(f"[{tenant_id}] ❌ Erreur générale sync : {e}")
+        print(f"[{tenant_id}] ❌ Erreur générale de cycle : {e}")
     finally:
         if cursor:
             cursor.close()
         if conn:
             conn.close()
-            print(f"[{tenant_id}] Connexion SQL fermée.")
-
-def sync():
-    result = auto_activate_and_verify()
-    if not result:
-        return
-    tenant_id, db_config = result
-    pull_and_push_modular_data(db_config, tenant_id)
 
 if __name__ == "__main__":
-    print("🚀 Sikka Sync Agent démarré en mode continu (Daemon)...")
+    print("🚀 Sikka Sync Agent démarré en mode Daemon continu...")
+    result = auto_activate_and_verify()
+    if not result:
+        pause_on_exit()
+    
+    tenant_id, db_config = result
+    
+    # Boucle continue infinie de type Industriel
     while True:
         try:
-            sync()
+            pull_and_push_modular_data(db_config, tenant_id)
         except Exception as e:
-            print(f"⚠️ Erreur dans la boucle d'arrière-plan : {e}")
+            print(f"⚠️ Erreur critique dans la boucle d'arrière-plan : {e}")
         
-        print("⏳ Prochaine synchronisation dans 20 minutes...")
-        time.sleep(1200) # Pause de 20 minutes (1200 secondes)
+        # Intervalle de 5 à 10 minutes pour des données quasi-live (ex: 300 secondes = 5 min)
+        # Vous pouvez le changer à 1200 pour 20 minutes si vous préférez.
+        time.sleep(60)
