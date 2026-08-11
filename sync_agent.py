@@ -1,4 +1,4 @@
-# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v3.1 - Continuous Daemon)
+# Sikka Secure Auto-Activating Sync Agent (Sage 100 Production Core v3.4 - Complete Multi-Matrix Daemon)
 import sqlite3
 import os
 import sys
@@ -165,7 +165,6 @@ def pull_and_push_modular_data(db_config, tenant_id):
     
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
     
-    # Send agent heartbeat so dashboard knows agent is alive
     try:
         sb.table("merchants").update({
             "status": "active",
@@ -194,11 +193,12 @@ def pull_and_push_modular_data(db_config, tenant_id):
         print(f"[{tenant_id}] ❌ Échec de connexion SQL : {e}")
         return
 
+    # Intégration complète de l'ensemble des requêtes matrices (avec TOP 200 élargi pour les ventes)
     queries_map = {
         "sales": (
             "tenant_ventes_matrix",
             """
-            SELECT TOP 50 
+            SELECT TOP 200 
                 E.DO_Piece AS NumFacture,
                 CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
                 E.DO_Tiers AS CodeClient,
@@ -220,7 +220,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
         "achats": (
             "tenant_achats_matrix",
             """
-            SELECT TOP 50 
+            SELECT TOP 100 
                 E.DO_Piece AS NumFacture,
                 CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
                 E.DO_Tiers AS CodeFournisseur,
@@ -378,7 +378,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
                 CASE WHEN E.DO_Type = 20 THEN 'ENTRÉE' ELSE 'SORTIE' END AS Sens, 
                 L.DL_MontantTTC AS Montant
             FROM F_DOCENTETE E WITH (NOLOCK) 
-            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = E.DO_Type 
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
             WHERE E.DO_Type IN (20, 21) 
             ORDER BY E.DO_Date DESC;
         """,
@@ -399,7 +399,7 @@ def pull_and_push_modular_data(db_config, tenant_id):
                     ELSE CAST(E.DO_Type AS VARCHAR) 
                 END AS Type
             FROM F_DOCENTETE E WITH (NOLOCK) 
-            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = E.DO_Type 
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
             GROUP BY E.DO_Date, E.DO_Piece, E.DO_Tiers, E.DO_Type 
             ORDER BY E.DO_Date DESC;
         """,
@@ -469,11 +469,12 @@ def pull_and_push_modular_data(db_config, tenant_id):
                     columns = [col[0] for col in cursor.description]
                     data_rows = [dict(zip(columns, row)) for row in rows]
                     if data_rows:
-                        sb.table(table_name).upsert({
+                        payload = {
                             "tenant_id": tenant_id,
                             "data": json.loads(json.dumps(data_rows, default=str)),
                             "updated_at": str(datetime.now())
-                        }, on_conflict="tenant_id").execute()
+                        }
+                        sb.table(table_name).upsert(payload, on_conflict="tenant_id").execute()
                 except Exception as e:
                     print(f"[{tenant_id}] ⚠️ Erreur module {module_key} : {e}")
             
@@ -495,13 +496,10 @@ if __name__ == "__main__":
     
     tenant_id, db_config = result
     
-    # Boucle continue infinie de type Industriel
     while True:
         try:
             pull_and_push_modular_data(db_config, tenant_id)
         except Exception as e:
             print(f"⚠️ Erreur critique dans la boucle d'arrière-plan : {e}")
         
-        # Intervalle de 5 à 10 minutes pour des données quasi-live (ex: 300 secondes = 5 min)
-        # Vous pouvez le changer à 1200 pour 20 minutes si vous préférez.
         time.sleep(60)
