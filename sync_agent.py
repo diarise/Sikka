@@ -164,7 +164,7 @@ def execute_query_with_retry(cursor, query, retries=3, delay=5):
             raise
 
 def pull_and_push_modular_data(db_config, tenant_id):
-    """Extrait les 15 matrices opérationnelles et synchronise vers Supabase."""
+    """Extrait les matrices opérationnelles et synchronise vers Supabase."""
     if not pyodbc:
         print("❌ pyodbc non disponible.")
         return
@@ -191,273 +191,273 @@ def pull_and_push_modular_data(db_config, tenant_id):
         print(f"[{tenant_id}] ❌ Échec de connexion SQL : {e}")
         return
 
-    # Dictionnaire complet des 15 requêtes avec leurs clés de module respectives
-queries_map = {
-    "sales": (
-        "tenant_ventes_matrix",
-        """
-        SELECT TOP 50 
-            E.DO_Piece AS NumFacture,
-            CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
-            E.DO_Tiers AS CodeClient,
-            ISNULL(C.CT_Intitule, 'CLIENT INCONNU') AS NomClient,
-            CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MONTANT_TTC,
-            CASE E.DO_Type 
-                WHEN 7 THEN 'FACTURE' 
-                WHEN 6 THEN 'AVOIR' 
-                ELSE CAST(E.DO_Type AS VARCHAR) 
-            END AS TypeDoc
-        FROM F_DOCENTETE E WITH (NOLOCK)
-        INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
-        LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
-        WHERE E.DO_Type IN (6, 7)
-        GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type
-        ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
-    """,
-    ),
-    "achats": (
-        "tenant_achats_matrix",
-        """
-        SELECT TOP 50 
-            E.DO_Piece AS NumFacture,
-            CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
-            E.DO_Tiers AS CodeFournisseur,
-            ISNULL(C.CT_Intitule, 'FOURNISSEUR INCONNU') AS NomFournisseur,
-            CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MONTANT_TTC,
-            'FACTURE FOURNISSEUR' AS TypeDoc
-        FROM F_DOCENTETE E WITH (NOLOCK)
-        INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
-        LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
-        WHERE E.DO_Type = 17
-        GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule
-        ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
-    """,
-    ),
-    "caisse": (
-        "tenant_caisse_matrix",
-        """
-        SELECT TOP 200 
-            R.RG_No AS NUM_REGLEMENT, 
-            CONVERT(VARCHAR(10), R.RG_Date, 103) AS DATE_MVT,
-            ISNULL(C.CT_Intitule, 'DIVERS') AS NOM_TIERS,
-            R.RG_Libelle AS LIBELLE_MVT, 
-            ISNULL(CA.CA_Intitule, 'CAISSE PRINCIPALE') AS NOM_CAISSE,
-            CASE WHEN R.RG_Type = 0 THEN R.RG_Montant ELSE 0 END AS ENTREE_CAISSE,
-            CASE WHEN R.RG_Type = 1 THEN R.RG_Montant ELSE 0 END AS SORTIE_CAISSE,
-            CASE R.N_Reglement 
-                WHEN 0 THEN 'Espèces'
-                WHEN 1 THEN 'Chèque'
-                WHEN 2 THEN 'Carte'
-                WHEN 3 THEN 'Virement'
-                ELSE 'Autre'
-            END AS MODE_REGLEMENT
-        FROM F_CREGLEMENT R WITH (NOLOCK)
-        LEFT JOIN F_COMPTET C WITH (NOLOCK) ON R.CT_NumPayeur = C.CT_Num
-        LEFT JOIN F_CAISSE CA WITH (NOLOCK) ON R.CA_No = CA.CA_No
-        ORDER BY R.RG_No DESC;
-    """,
-    ),
-    "stock": (
-        "tenant_stock_matrix",
-        """
-        SELECT A.AR_Ref AS CodeArticle, A.AR_Design AS LibelleArticle, S.AS_QteSto AS QuantiteStock, S.AS_MontSto AS MontantStock
-        FROM F_ARTSTOCK S WITH (NOLOCK) 
-        INNER JOIN F_ARTICLE A WITH (NOLOCK) ON S.AR_Ref = A.AR_Ref 
-        WHERE S.AS_QteSto != 0 
-        ORDER BY A.AR_Ref;
-    """,
-    ),
-    "top_articles": (
-        "tenant_top_articles_matrix",
-        """
-        SELECT TOP 20 
-            L.AR_Ref AS CodeArticle, 
-            MAX(ISNULL(L.DL_Design, 'Article')) AS LibelleArticle, 
-            SUM(L.DL_Qte) AS QuantiteVendue, 
-            SUM(L.DL_MontantTTC) AS MontantVendu
-        FROM F_DOCLIGNE L WITH (NOLOCK) 
-        INNER JOIN F_DOCENTETE E WITH (NOLOCK) ON L.DO_Piece = E.DO_Piece AND L.DO_Type = E.DO_Type
-        WHERE E.DO_Type IN (6, 7) 
-        GROUP BY L.AR_Ref 
-        ORDER BY SUM(L.DL_MontantTTC) DESC;
-    """,
-    ),
-    "top_clients": (
-        "tenant_top_clients_matrix",
-        """
-        SELECT TOP 20 
-            E.DO_Tiers AS CodeClient, 
-            MAX(ISNULL(C.CT_Intitule, 'CLIENT')) AS NomClient, 
-            SUM(L.DL_MontantTTC) AS CA_Total, 
-            COUNT(DISTINCT E.DO_Piece) AS NbFactures
-        FROM F_DOCENTETE E WITH (NOLOCK) 
-        INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
-        LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num 
-        WHERE E.DO_Type IN (6, 7) 
-        GROUP BY E.DO_Tiers 
-        ORDER BY SUM(L.DL_MontantTTC) DESC;
-    """,
-    ),
-    "evolution_ca": (
-        "tenant_evolution_ca_matrix",
-        """
-        SELECT 
-            YEAR(E.DO_Date) AS Annee, 
-            MONTH(E.DO_Date) AS Mois, 
-            SUM(L.DL_MontantTTC) AS CA_Mensuel, 
-            COUNT(DISTINCT E.DO_Piece) AS NbFactures
-        FROM F_DOCENTETE E WITH (NOLOCK) 
-        INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
-        WHERE E.DO_Type IN (6, 7)
-        GROUP BY YEAR(E.DO_Date), MONTH(E.DO_Date) 
-        ORDER BY Annee DESC, Mois DESC;
-    """,
-    ),
-    "rotation": (
-        "tenant_rotation_matrix",
-        """
-        SELECT TOP 20 
-            L.AR_Ref AS CodeArticle, 
-            MAX(ISNULL(A.AR_Design, L.DL_Design)) AS Libelle, 
-            SUM(L.DL_Qte) AS QuantiteVendue, 
-            SUM(L.DL_MontantTTC) / NULLIF(SUM(L.DL_Qte), 0) AS PrixMoyen
-        FROM F_DOCLIGNE L WITH (NOLOCK) 
-        INNER JOIN F_DOCENTETE E WITH (NOLOCK) ON L.DO_Piece = E.DO_Piece AND L.DO_Type = E.DO_Type 
-        LEFT JOIN F_ARTICLE A WITH (NOLOCK) ON L.AR_Ref = A.AR_Ref
-        WHERE E.DO_Type IN (6, 7) AND L.AR_Ref IS NOT NULL 
-        GROUP BY L.AR_Ref 
-        ORDER BY SUM(L.DL_Qte) DESC;
-    """,
-    ),
-    "mode_reglement": (
-        "tenant_mode_reglement_matrix",
-        """
-        SELECT 
-            CASE R.N_Reglement 
-                WHEN 0 THEN 'Espèces'
-                WHEN 1 THEN 'Chèque'
-                WHEN 2 THEN 'Carte'
-                WHEN 3 THEN 'Virement'
-                ELSE 'Autre'
-            END AS ModeReglement, 
-            SUM(R.RG_Montant) AS TotalRegle 
-        FROM F_CREGLEMENT R WITH (NOLOCK) 
-        GROUP BY R.N_Reglement 
-        ORDER BY SUM(R.RG_Montant) DESC;
-    """,
-    ),
-    "marge_brute": (
-        "tenant_marge_brute_matrix",
-        """
-        SELECT TOP 20 
-            L.AR_Ref AS CodeArticle, 
-            MAX(ISNULL(A.AR_Design, L.DL_Design)) AS Libelle, 
-            AVG(L.DL_PrixUnitaire) AS PrixVenteMoyen, 
-            AVG(ISNULL(A.AR_PrixAch, 0)) AS PrixAchatMoyen,
-            (AVG(L.DL_PrixUnitaire) - AVG(ISNULL(A.AR_PrixAch, 0))) AS MargeUnitaire
-        FROM F_DOCLIGNE L WITH (NOLOCK) 
-        INNER JOIN F_DOCENTETE E WITH (NOLOCK) ON L.DO_Piece = E.DO_Piece AND L.DO_Type = E.DO_Type 
-        LEFT JOIN F_ARTICLE A WITH (NOLOCK) ON L.AR_Ref = A.AR_Ref
-        WHERE E.DO_Type IN (6, 7) AND L.AR_Ref IS NOT NULL 
-        GROUP BY L.AR_Ref 
-        HAVING AVG(L.DL_PrixUnitaire) > 0 
-        ORDER BY MargeUnitaire DESC;
-    """,
-    ),
-    "mouvements": (
-        "tenant_mouvements_matrix",
-        """
-        SELECT TOP 200 
-            E.DO_Piece AS NumPiece, 
-            CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateMouvement, 
-            L.AR_Ref AS CodeArticle, 
-            L.DL_Design AS LibelleArticle,
-            L.DL_Qte AS Quantite, 
-            CASE WHEN E.DO_Type = 20 THEN 'ENTRÉE' ELSE 'SORTIE' END AS Sens, 
-            L.DL_MontantTTC AS Montant
-        FROM F_DOCENTETE E WITH (NOLOCK) 
-        INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
-        WHERE E.DO_Type IN (20, 21) 
-        ORDER BY E.DO_Date DESC;
-    """,
-    ),
-    "dernieres_transac": (
-        "tenant_dernieres_transac_matrix",
-        """
-        SELECT TOP 50 
-            CONVERT(VARCHAR(10), E.DO_Date, 103) AS Date, 
-            E.DO_Piece AS Piece, 
-            E.DO_Tiers AS Tiers, 
-            SUM(L.DL_MontantTTC) AS Montant,
-            CASE E.DO_Type 
-                WHEN 7 THEN 'Facture' 
-                WHEN 17 THEN 'Achat' 
-                WHEN 20 THEN 'Entrée Stock' 
-                WHEN 21 THEN 'Sortie Stock' 
-                ELSE CAST(E.DO_Type AS VARCHAR) 
-            END AS Type
-        FROM F_DOCENTETE E WITH (NOLOCK) 
-        INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
-        GROUP BY E.DO_Date, E.DO_Piece, E.DO_Tiers, E.DO_Type 
-        ORDER BY E.DO_Date DESC;
-    """,
-    ),
-    "ca_famille": (
-        "tenant_ca_famille_matrix",
-        """
-        SELECT 
-            ISNULL(FA.FA_CodeFamille, 'AUTRE') AS CodeFamille, 
-            ISNULL(FA.FA_Intitule, 'Général') AS LibelleFamille, 
-            SUM(L.DL_MontantTTC) AS CA_Famille
-        FROM F_DOCLIGNE L WITH (NOLOCK) 
-        INNER JOIN F_DOCENTETE E WITH (NOLOCK) ON L.DO_Piece = E.DO_Piece AND L.DO_Type = E.DO_Type 
-        LEFT JOIN F_ARTICLE A WITH (NOLOCK) ON L.AR_Ref = A.AR_Ref 
-        LEFT JOIN F_FAMILLE FA WITH (NOLOCK) ON A.FA_CodeFamille = FA.FA_CodeFamille
-        WHERE E.DO_Type IN (6, 7) 
-        GROUP BY FA.FA_CodeFamille, FA.FA_Intitule 
-        ORDER BY SUM(L.DL_MontantTTC) DESC;
-    """,
-    ),
-    "impayees": (
-        "tenant_impayees_matrix",
-        """
-        SELECT TOP 50 
-            E.DO_Piece AS NumFacture, 
-            CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture, 
-            E.DO_Tiers AS CodeClient, 
-            ISNULL(C.CT_Intitule, 'CLIENT') AS NomClient,
-            CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MontantFacture,
-            ISNULL(SUM(R.RG_Montant), 0) AS MontantRegle,
-            CAST(SUM(L.DL_MontantTTC) - ISNULL(SUM(R.RG_Montant), 0) AS DECIMAL(18,2)) AS Solde
-        FROM F_DOCENTETE E WITH (NOLOCK) 
-        INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
-        LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num 
-        LEFT JOIN F_CREGLEMENT R WITH (NOLOCK) ON E.DO_Tiers = R.CT_NumPayeur
-        WHERE E.DO_Type = 7 
-        GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule
-        HAVING CAST(SUM(L.DL_MontantTTC) - ISNULL(SUM(R.RG_Montant), 0) AS DECIMAL(18,2)) > 0
-        ORDER BY E.DO_Date DESC;
-    """,
-    ),
-    "solde_client": (
-        "tenant_solde_client_matrix",
-        """
-        SELECT 
-            C.CT_Num AS CodeClient, 
-            C.CT_Intitule AS Nom, 
-            ISNULL(SUM(L.DL_MontantTTC), 0) AS TotalFacture, 
-            ISNULL(SUM(R.RG_Montant), 0) AS TotalRegle,
-            ISNULL(SUM(L.DL_MontantTTC), 0) - ISNULL(SUM(R.RG_Montant), 0) AS Solde 
-        FROM F_COMPTET C WITH (NOLOCK)
-        LEFT JOIN F_DOCENTETE E WITH (NOLOCK) ON C.CT_Num = E.DO_Tiers AND E.DO_Type = 7 
-        LEFT JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
-        LEFT JOIN F_CREGLEMENT R WITH (NOLOCK) ON C.CT_Num = R.CT_NumPayeur
-        GROUP BY C.CT_Num, C.CT_Intitule 
-        HAVING ISNULL(SUM(L.DL_MontantTTC), 0) - ISNULL(SUM(R.RG_Montant), 0) <> 0 
-        ORDER BY Solde DESC;
-    """,
-    ),
-}
+    # Dictionnaire complet des requêtes avec une indentation propre et valide
+    queries_map = {
+        "sales": (
+            "tenant_ventes_matrix",
+            """
+            SELECT TOP 50 
+                E.DO_Piece AS NumFacture,
+                CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
+                E.DO_Tiers AS CodeClient,
+                ISNULL(C.CT_Intitule, 'CLIENT INCONNU') AS NomClient,
+                CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MONTANT_TTC,
+                CASE E.DO_Type 
+                    WHEN 7 THEN 'FACTURE' 
+                    WHEN 6 THEN 'AVOIR' 
+                    ELSE CAST(E.DO_Type AS VARCHAR) 
+                END AS TypeDoc
+            FROM F_DOCENTETE E WITH (NOLOCK)
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+            LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
+            WHERE E.DO_Type IN (6, 7)
+            GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type
+            ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
+        """,
+        ),
+        "achats": (
+            "tenant_achats_matrix",
+            """
+            SELECT TOP 50 
+                E.DO_Piece AS NumFacture,
+                CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture,
+                E.DO_Tiers AS CodeFournisseur,
+                ISNULL(C.CT_Intitule, 'FOURNISSEUR INCONNU') AS NomFournisseur,
+                CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MONTANT_TTC,
+                'FACTURE FOURNISSEUR' AS TypeDoc
+            FROM F_DOCENTETE E WITH (NOLOCK)
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+            LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
+            WHERE E.DO_Type = 17
+            GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule
+            ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
+        """,
+        ),
+        "caisse": (
+            "tenant_caisse_matrix",
+            """
+            SELECT TOP 200 
+                R.RG_No AS NUM_REGLEMENT, 
+                CONVERT(VARCHAR(10), R.RG_Date, 103) AS DATE_MVT,
+                ISNULL(C.CT_Intitule, 'DIVERS') AS NOM_TIERS,
+                R.RG_Libelle AS LIBELLE_MVT, 
+                ISNULL(CA.CA_Intitule, 'CAISSE PRINCIPALE') AS NOM_CAISSE,
+                CASE WHEN R.RG_Type = 0 THEN R.RG_Montant ELSE 0 END AS ENTREE_CAISSE,
+                CASE WHEN R.RG_Type = 1 THEN R.RG_Montant ELSE 0 END AS SORTIE_CAISSE,
+                CASE R.N_Reglement 
+                    WHEN 0 THEN 'Espèces'
+                    WHEN 1 THEN 'Chèque'
+                    WHEN 2 THEN 'Carte'
+                    WHEN 3 THEN 'Virement'
+                    ELSE 'Autre'
+                END AS MODE_REGLEMENT
+            FROM F_CREGLEMENT R WITH (NOLOCK)
+            LEFT JOIN F_COMPTET C WITH (NOLOCK) ON R.CT_NumPayeur = C.CT_Num
+            LEFT JOIN F_CAISSE CA WITH (NOLOCK) ON R.CA_No = CA.CA_No
+            ORDER BY R.RG_No DESC;
+        """,
+        ),
+        "stock": (
+            "tenant_stock_matrix",
+            """
+            SELECT A.AR_Ref AS CodeArticle, A.AR_Design AS LibelleArticle, S.AS_QteSto AS QuantiteStock, S.AS_MontSto AS MontantStock
+            FROM F_ARTSTOCK S WITH (NOLOCK) 
+            INNER JOIN F_ARTICLE A WITH (NOLOCK) ON S.AR_Ref = A.AR_Ref 
+            WHERE S.AS_QteSto != 0 
+            ORDER BY A.AR_Ref;
+        """,
+        ),
+        "top_articles": (
+            "tenant_top_articles_matrix",
+            """
+            SELECT TOP 20 
+                L.AR_Ref AS CodeArticle, 
+                MAX(ISNULL(L.DL_Design, 'Article')) AS LibelleArticle, 
+                SUM(L.DL_Qte) AS QuantiteVendue, 
+                SUM(L.DL_MontantTTC) AS MontantVendu
+            FROM F_DOCLIGNE L WITH (NOLOCK) 
+            INNER JOIN F_DOCENTETE E WITH (NOLOCK) ON L.DO_Piece = E.DO_Piece AND L.DO_Type = E.DO_Type
+            WHERE E.DO_Type IN (6, 7) 
+            GROUP BY L.AR_Ref 
+            ORDER BY SUM(L.DL_MontantTTC) DESC;
+        """,
+        ),
+        "top_clients": (
+            "tenant_top_clients_matrix",
+            """
+            SELECT TOP 20 
+                E.DO_Tiers AS CodeClient, 
+                MAX(ISNULL(C.CT_Intitule, 'CLIENT')) AS NomClient, 
+                SUM(L.DL_MontantTTC) AS CA_Total, 
+                COUNT(DISTINCT E.DO_Piece) AS NbFactures
+            FROM F_DOCENTETE E WITH (NOLOCK) 
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
+            LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num 
+            WHERE E.DO_Type IN (6, 7) 
+            GROUP BY E.DO_Tiers 
+            ORDER BY SUM(L.DL_MontantTTC) DESC;
+        """,
+        ),
+        "evolution_ca": (
+            "tenant_evolution_ca_matrix",
+            """
+            SELECT 
+                YEAR(E.DO_Date) AS Annee, 
+                MONTH(E.DO_Date) AS Mois, 
+                SUM(L.DL_MontantTTC) AS CA_Mensuel, 
+                COUNT(DISTINCT E.DO_Piece) AS NbFactures
+            FROM F_DOCENTETE E WITH (NOLOCK) 
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
+            WHERE E.DO_Type IN (6, 7)
+            GROUP BY YEAR(E.DO_Date), MONTH(E.DO_Date) 
+            ORDER BY Annee DESC, Mois DESC;
+        """,
+        ),
+        "rotation": (
+            "tenant_rotation_matrix",
+            """
+            SELECT TOP 20 
+                L.AR_Ref AS CodeArticle, 
+                MAX(ISNULL(A.AR_Design, L.DL_Design)) AS Libelle, 
+                SUM(L.DL_Qte) AS QuantiteVendue, 
+                SUM(L.DL_MontantTTC) / NULLIF(SUM(L.DL_Qte), 0) AS PrixMoyen
+            FROM F_DOCLIGNE L WITH (NOLOCK) 
+            INNER JOIN F_DOCENTETE E WITH (NOLOCK) ON L.DO_Piece = E.DO_Piece AND L.DO_Type = E.DO_Type 
+            LEFT JOIN F_ARTICLE A WITH (NOLOCK) ON L.AR_Ref = A.AR_Ref
+            WHERE E.DO_Type IN (6, 7) AND L.AR_Ref IS NOT NULL 
+            GROUP BY L.AR_Ref 
+            ORDER BY SUM(L.DL_Qte) DESC;
+        """,
+        ),
+        "mode_reglement": (
+            "tenant_mode_reglement_matrix",
+            """
+            SELECT 
+                CASE R.N_Reglement 
+                    WHEN 0 THEN 'Espèces'
+                    WHEN 1 THEN 'Chèque'
+                    WHEN 2 THEN 'Carte'
+                    WHEN 3 THEN 'Virement'
+                    ELSE 'Autre'
+                END AS ModeReglement, 
+                SUM(R.RG_Montant) AS TotalRegle 
+            FROM F_CREGLEMENT R WITH (NOLOCK) 
+            GROUP BY R.N_Reglement 
+            ORDER BY SUM(R.RG_Montant) DESC;
+        """,
+        ),
+        "marge_brute": (
+            "tenant_marge_brute_matrix",
+            """
+            SELECT TOP 20 
+                L.AR_Ref AS CodeArticle, 
+                MAX(ISNULL(A.AR_Design, L.DL_Design)) AS Libelle, 
+                AVG(L.DL_PrixUnitaire) AS PrixVenteMoyen, 
+                AVG(ISNULL(A.AR_PrixAch, 0)) AS PrixAchatMoyen,
+                (AVG(L.DL_PrixUnitaire) - AVG(ISNULL(A.AR_PrixAch, 0))) AS MargeUnitaire
+            FROM F_DOCLIGNE L WITH (NOLOCK) 
+            INNER JOIN F_DOCENTETE E WITH (NOLOCK) ON L.DO_Piece = E.DO_Piece AND L.DO_Type = E.DO_Type 
+            LEFT JOIN F_ARTICLE A WITH (NOLOCK) ON L.AR_Ref = A.AR_Ref
+            WHERE E.DO_Type IN (6, 7) AND L.AR_Ref IS NOT NULL 
+            GROUP BY L.AR_Ref 
+            HAVING AVG(L.DL_PrixUnitaire) > 0 
+            ORDER BY MargeUnitaire DESC;
+        """,
+        ),
+        "mouvements": (
+            "tenant_mouvements_matrix",
+            """
+            SELECT TOP 200 
+                E.DO_Piece AS NumPiece, 
+                CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateMouvement, 
+                L.AR_Ref AS CodeArticle, 
+                L.DL_Design AS LibelleArticle,
+                L.DL_Qte AS Quantite, 
+                CASE WHEN E.DO_Type = 20 THEN 'ENTRÉE' ELSE 'SORTIE' END AS Sens, 
+                L.DL_MontantTTC AS Montant
+            FROM F_DOCENTETE E WITH (NOLOCK) 
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
+            WHERE E.DO_Type IN (20, 21) 
+            ORDER BY E.DO_Date DESC;
+        """,
+        ),
+        "dernieres_transac": (
+            "tenant_dernieres_transac_matrix",
+            """
+            SELECT TOP 50 
+                CONVERT(VARCHAR(10), E.DO_Date, 103) AS Date, 
+                E.DO_Piece AS Piece, 
+                E.DO_Tiers AS Tiers, 
+                SUM(L.DL_MontantTTC) AS Montant,
+                CASE E.DO_Type 
+                    WHEN 7 THEN 'Facture' 
+                    WHEN 17 THEN 'Achat' 
+                    WHEN 20 THEN 'Entrée Stock' 
+                    WHEN 21 THEN 'Sortie Stock' 
+                    ELSE CAST(E.DO_Type AS VARCHAR) 
+                END AS Type
+            FROM F_DOCENTETE E WITH (NOLOCK) 
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
+            GROUP BY E.DO_Date, E.DO_Piece, E.DO_Tiers, E.DO_Type 
+            ORDER BY E.DO_Date DESC;
+        """,
+        ),
+        "ca_famille": (
+            "tenant_ca_famille_matrix",
+            """
+            SELECT 
+                ISNULL(FA.FA_CodeFamille, 'AUTRE') AS CodeFamille, 
+                ISNULL(FA.FA_Intitule, 'Général') AS LibelleFamille, 
+                SUM(L.DL_MontantTTC) AS CA_Famille
+            FROM F_DOCLIGNE L WITH (NOLOCK) 
+            INNER JOIN F_DOCENTETE E WITH (NOLOCK) ON L.DO_Piece = E.DO_Piece AND L.DO_Type = E.DO_Type 
+            LEFT JOIN F_ARTICLE A WITH (NOLOCK) ON L.AR_Ref = A.AR_Ref 
+            LEFT JOIN F_FAMILLE FA WITH (NOLOCK) ON A.FA_CodeFamille = FA.FA_CodeFamille
+            WHERE E.DO_Type IN (6, 7) 
+            GROUP BY FA.FA_CodeFamille, FA.FA_Intitule 
+            ORDER BY SUM(L.DL_MontantTTC) DESC;
+        """,
+        ),
+        "impayees": (
+            "tenant_impayees_matrix",
+            """
+            SELECT TOP 50 
+                E.DO_Piece AS NumFacture, 
+                CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture, 
+                E.DO_Tiers AS CodeClient, 
+                ISNULL(C.CT_Intitule, 'CLIENT') AS NomClient,
+                CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MontantFacture,
+                ISNULL(SUM(R.RG_Montant), 0) AS MontantRegle,
+                CAST(SUM(L.DL_MontantTTC) - ISNULL(SUM(R.RG_Montant), 0) AS DECIMAL(18,2)) AS Solde
+            FROM F_DOCENTETE E WITH (NOLOCK) 
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
+            LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num 
+            LEFT JOIN F_CREGLEMENT R WITH (NOLOCK) ON E.DO_Tiers = R.CT_NumPayeur
+            WHERE E.DO_Type = 7 
+            GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule
+            HAVING CAST(SUM(L.DL_MontantTTC) - ISNULL(SUM(R.RG_Montant), 0) AS DECIMAL(18,2)) > 0
+            ORDER BY E.DO_Date DESC;
+        """,
+        ),
+        "solde_client": (
+            "tenant_solde_client_matrix",
+            """
+            SELECT 
+                C.CT_Num AS CodeClient, 
+                C.CT_Intitule AS Nom, 
+                ISNULL(SUM(L.DL_MontantTTC), 0) AS TotalFacture, 
+                ISNULL(SUM(R.RG_Montant), 0) AS TotalRegle,
+                ISNULL(SUM(L.DL_MontantTTC), 0) - ISNULL(SUM(R.RG_Montant), 0) AS Solde 
+            FROM F_COMPTET C WITH (NOLOCK)
+            LEFT JOIN F_DOCENTETE E WITH (NOLOCK) ON C.CT_Num = E.DO_Tiers AND E.DO_Type = 7 
+            LEFT JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
+            LEFT JOIN F_CREGLEMENT R WITH (NOLOCK) ON C.CT_Num = R.CT_NumPayeur
+            GROUP BY C.CT_Num, C.CT_Intitule 
+            HAVING ISNULL(SUM(L.DL_MontantTTC), 0) - ISNULL(SUM(R.RG_Montant), 0) <> 0 
+            ORDER BY Solde DESC;
+        """,
+        ),
+    }
 
     try:
         for module_key, (table_name, query) in queries_map.items():
