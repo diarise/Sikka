@@ -304,15 +304,14 @@ def pull_and_push_modular_data(db_config, tenant_id):
             "tenant_evolution_ca_matrix",
             """
             SELECT 
-                YEAR(E.DO_Date) AS Annee, 
-                MONTH(E.DO_Date) AS Mois, 
+                CAST(YEAR(E.DO_Date) AS VARCHAR) + '-' + RIGHT('0' + CAST(MONTH(E.DO_Date) AS VARCHAR), 2) AS Periode,
                 SUM(L.DL_MontantTTC) AS CA_Mensuel, 
                 COUNT(DISTINCT E.DO_Piece) AS NbFactures
             FROM F_DOCENTETE E WITH (NOLOCK) 
             INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
             WHERE E.DO_Type IN (6, 7)
             GROUP BY YEAR(E.DO_Date), MONTH(E.DO_Date) 
-            ORDER BY Annee DESC, Mois DESC;
+            ORDER BY YEAR(E.DO_Date) ASC, MONTH(E.DO_Date) ASC;
         """,
         ),
         "rotation": (
