@@ -215,11 +215,11 @@ def pull_and_push_modular_data(db_config, tenant_id):
                 E.DO_Tiers AS CodeFournisseur,
                 ISNULL(C.CT_Intitule, 'FOURNISSEUR INCONNU') AS NomFournisseur,
                 CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MONTANT_TTC,
-                CASE WHEN E.DO_Type = 0 THEN 'ACHAT' WHEN E.DO_Type = 5 THEN 'AVOIR FOURNISSEUR' ELSE CAST(E.DO_Type AS VARCHAR) END AS TypeDoc
+                CASE WHEN E.DO_Type = 0 THEN 'ACHAT' WHEN E.DO_Type = 1 THEN 'PRÉPARATION ACHAT' WHEN E.DO_Type = 5 THEN 'AVOIR' ELSE CAST(E.DO_Type AS VARCHAR) END AS TypeDoc
             FROM F_DOCENTETE E WITH (NOLOCK)
             INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type
             LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num
-            WHERE E.DO_Type IN (0, 1, 4, 5)
+            WHERE E.DO_Type IN (0, 1, 2, 3, 4, 5)
             GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_Type
             ORDER BY E.DO_Date DESC, E.DO_Piece DESC;
         """),
@@ -291,10 +291,20 @@ def pull_and_push_modular_data(db_config, tenant_id):
             WHERE E.DO_Type IN (6, 7) GROUP BY FA.FA_CodeFamille, FA.FA_Intitule ORDER BY SUM(L.DL_MontantTTC) DESC;
         """),
         "impayees": ("tenant_impayees_matrix", """
-            SELECT E.DO_Piece AS NumFacture, CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture, E.DO_Tiers AS CodeClient, ISNULL(C.CT_Intitule, 'CLIENT') AS NomClient,
-            SUM(L.DL_MontantTTC) AS MontantFacture, ISNULL(SUM(R.RG_Montant), 0) AS MontantRegle, SUM(L.DL_MontantTTC) - ISNULL(SUM(R.RG_Montant), 0) AS Solde
-            FROM F_DOCENTETE E WITH (NOLOCK) INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num LEFT JOIN F_CREGLEMENT R WITH (NOLOCK) ON E.DO_Tiers = R.CT_NumPayeur
-            WHERE E.DO_Type = 6 GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule HAVING SUM(L.DL_MontantTTC) - ISNULL(SUM(R.RG_Montant), 0) > 0 ORDER BY E.DO_Date;
+            SELECT TOP 50 
+                E.DO_Piece AS NumFacture, 
+                CONVERT(VARCHAR(10), E.DO_Date, 103) AS DateFacture, 
+                E.DO_Tiers AS CodeClient, 
+                ISNULL(C.CT_Intitule, 'CLIENT') AS NomClient,
+                CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS MontantFacture, 
+                CAST(ISNULL(E.DO_TotalHT, 0) AS DECIMAL(18,2)) AS MontantRegle, 
+                CAST(SUM(L.DL_MontantTTC) AS DECIMAL(18,2)) AS Solde
+            FROM F_DOCENTETE E WITH (NOLOCK) 
+            INNER JOIN F_DOCLIGNE L WITH (NOLOCK) ON E.DO_Piece = L.DO_Piece AND E.DO_Type = L.DO_Type 
+            LEFT JOIN F_COMPTET C WITH (NOLOCK) ON E.DO_Tiers = C.CT_Num 
+            WHERE E.DO_Type = 6 
+            GROUP BY E.DO_Piece, E.DO_Date, E.DO_Tiers, C.CT_Intitule, E.DO_TotalHT 
+            ORDER BY E.DO_Date DESC;
         """),
         "solde_client": ("tenant_solde_client_matrix", """
             SELECT C.CT_Num AS CodeClient, C.CT_Intitule AS Nom, ISNULL(SUM(L.DL_MontantTTC), 0) AS TotalFacture, ISNULL(SUM(R.RG_Montant), 0) AS TotalRegle,
