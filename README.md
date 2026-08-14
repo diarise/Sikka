@@ -1,5 +1,6 @@
 # Sikka Sync Agent v4.0 — Setup Guide
 
+
 ## 0. Before anything: rotate your Supabase key
 
 The `service_role` key embedded in the old `sync_agent.py` is now considered
