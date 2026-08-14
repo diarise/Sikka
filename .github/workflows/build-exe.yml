@@ -45,13 +45,12 @@ jobs:
           # must never ship inside a build artifact. Each merchant machine gets its own
           # .env at install time (see README.md step 2).
 
-      - name: Upload EXE only
-        uses: actions/upload-artifact@v4
-        with:
-          name: sync-agent-exe
-          path: dist/sync_agent.exe
-
-      - name: Upload full release package
+      - name: Upload release package
+        # This is the ONE artifact this workflow produces — the exe plus the
+        # docs/config someone needs to actually install it on a merchant
+        # machine (.env.example, README.md, install_service.ps1). There's no
+        # separate "bare exe" artifact anymore, so there's only ever one
+        # thing to download from a run.
         uses: actions/upload-artifact@v4
         with:
           name: sikka-sync-agent-release
