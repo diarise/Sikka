@@ -1,14 +1,58 @@
-# Copy this file to ".env" (same folder as sync_agent.py) and fill in real values.
-# Never commit the real ".env" file to git or ship it inside a compiled .exe's
-# visible resources — it should be dropped onto each merchant machine at install
-# time, ideally with restricted file permissions.
+name: Build Sync Agent EXE
 
-# Use the anon/public key here if you've moved writes to an RPC/Edge Function
-# as described in the SECURITY NOTE at the bottom of sync_agent.py.
-# If you must use service_role short-term, rotate it immediately after v3.4's
-# key is retired, and treat this .env file as sensitive as a password vault.
-SUPABASE_URL=https://pednybdwhfgosfxbrmvf.supabase.co
-SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBlZG55YmR3aGZnb3NmeGJybXZmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NjIwMjY3MCwiZXhwIjoyMTAxNzc4NjcwfQ.lMnWE-0sPmdtxjy2Spt_aDnHPncw9xzCrZVpT16rgKk
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'sync_agent.py'
+      - 'sync_agent.spec'
+      - 'requirements.txt'
+      - '.github/workflows/build-exe.yml'
+  workflow_dispatch: {}   # lets you trigger a build manually from the Actions tab
 
-# How often (seconds) the agent pulls from Sage 100 and pushes to Supabase.
-SIKKA_SYNC_INTERVAL=60
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        # Uses sync_agent.spec (not inline --onefile flags) so the hidden-import
+        # list for supabase's sub-packages actually gets applied.
+        run: pyinstaller sync_agent.spec
+
+      - name: Assemble release package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item dist\sync_agent.exe release\
+          Copy-Item .env.example release\
+          Copy-Item README.md release\
+          Copy-Item install_service.ps1 release\
+          # NOTE: .env, license.key, db_config.json are intentionally NOT copied here —
+          # they either don't exist yet (fresh checkout) or are per-machine secrets that
+          # must never ship inside a build artifact. Each merchant machine gets its own
+          # .env at install time (see README.md step 2).
+
+      - name: Upload EXE only
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-agent-exe
+          path: dist/sync_agent.exe
+
+      - name: Upload full release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: sikka-sync-agent-release
+          path: release/
