@@ -1,0 +1,18 @@
+# Per-machine secrets and activation state — never commit these.
+.env
+license.key
+db_config.json
+sikka_sync.lock
+
+# Build output
+build/
+dist/
+*.spec~
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+
+# NSSM binary (download it yourself per README, don't commit the binary)
+nssm.exe
