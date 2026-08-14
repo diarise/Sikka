@@ -1,6 +1,5 @@
 # Sikka Sync Agent v4.0 — Setup Guide
 
-
 ## 0. Before anything: rotate your Supabase key
 
 The `service_role` key embedded in the old `sync_agent.py` is now considered
@@ -128,13 +127,13 @@ flags) — the spec is what pulls in the hidden imports supabase-py needs
 without it risks an exe that launches fine but fails the first time it
 talks to Supabase.
 
-Two artifacts come out of each run, downloadable from the workflow's
+One artifact comes out of each run, downloadable from the workflow's
 summary page:
 
-- **`sync-agent-exe`** — just the exe, if that's all you need.
 - **`sikka-sync-agent-release`** — the exe plus `.env.example`,
   `README.md`, and `install_service.ps1` zipped together, ready to hand to
-  whoever's setting up a new merchant machine.
+  whoever's setting up a new merchant machine. No more guessing which
+  download is the "real" one — there's only this.
 
 No GitHub secrets are needed for this build — v4.0 doesn't bake any
 Supabase key into the binary. Each machine gets its own `.env` dropped
